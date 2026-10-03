@@ -49,6 +49,10 @@ Screen {
     height: 22;
 }
 
+#memory {
+    height: 23;
+}
+
 #counters {
     height: auto;
     max-height: 20;

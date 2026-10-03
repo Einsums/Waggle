@@ -21,7 +21,17 @@ from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any, TextIO
 
-from .model import LogEntry, ProfileMeta, ProfileSnapshot, TimelineEvent, parse_log, parse_meta, parse_snapshot, parse_timeline
+from .model import (
+    LogEntry,
+    MemoryTrack,
+    ProfileMeta,
+    ProfileSnapshot,
+    TimelineEvent,
+    parse_log,
+    parse_meta,
+    parse_snapshot,
+    parse_timeline,
+)
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 19216
@@ -47,6 +57,8 @@ class StreamState:
         self.meta: ProfileMeta | None = None
         self.snapshot: ProfileSnapshot | None = None
         self.timeline: list[TimelineEvent] = []
+        #: None until the server sends a ``memory`` message: one from before the allocation track sends none.
+        self.memory: MemoryTrack | None = None
         self.log_entries: deque[LogEntry] = deque(maxlen=log_capacity)
         #: Total log entries ever appended, so a viewer can tell new ones from old after the deque wraps.
         self.log_total = 0
@@ -64,6 +76,10 @@ class StreamState:
                 self.meta.handlers = list(msg["handlers"])
         elif kind == "timeline":
             self.timeline = parse_timeline(msg)
+        elif kind == "memory":
+            if self.memory is None:
+                self.memory = MemoryTrack()
+            self.memory.apply(msg)
         elif kind in ("log", "output"):
             self.log_entries.append(parse_log(msg))
             self.log_total += 1

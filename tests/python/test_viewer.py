@@ -17,7 +17,7 @@ import pytest
 from waggle import analysis, format as fmt
 from waggle.client import ProfileClient, StreamState, parse_endpoint, read_recording, Recorder
 from waggle.disasm import match_symbol, strip_listing
-from waggle.model import ProfileNode, meta_to_dict, node_to_dict, parse_meta, parse_node, parse_snapshot
+from waggle.model import MemoryTrack, ProfileNode, meta_to_dict, node_to_dict, parse_meta, parse_node, parse_snapshot
 from waggle.session import (
     Session,
     export_snapshot,
@@ -74,6 +74,107 @@ def test_stream_state_folds_each_message_type():
     state.apply({"type": "output", "timestamp": "t", "message": "hello"})
     state.apply({"type": "log", "level": 3, "message": "careful"})
     assert [e.message for e in state.log_entries] == ["hello", "careful"] and state.log_total == 2
+
+
+def memory_msg(seq, samples, live=(), untracked=0):
+    return {
+        "type": "memory",
+        "live_bytes": samples[-1][1] if samples else 0,
+        "untracked": untracked,
+        "seq": seq,
+        "samples": [list(s) for s in samples],
+        "live": [{"address": hex(0x1000 + i), "bytes": b, "t_ms": t, "tid": 7, "zone": z} for i, (b, t, z) in enumerate(live)],
+    }
+
+
+def test_the_allocation_track_appends_what_is_new_and_drops_repeats():
+    state = StreamState()
+    assert state.memory is None
+    # On connect the whole curve; the next update overlaps it by one sample.
+    state.apply(memory_msg(3, [(1.0, 100), (2.0, 300), (3.0, 200)], live=[(200, 2.0, "solve")]))
+    state.apply(memory_msg(4, [(3.0, 200), (4.0, 0)], untracked=2))
+    track = state.memory
+    assert track.samples == [(1.0, 100), (2.0, 300), (3.0, 200), (4.0, 0)]
+    assert (track.seq, track.live_bytes, track.untracked, track.live) == (4, 0, 2, [])
+
+
+def test_the_allocation_track_orders_samples_from_different_threads():
+    track = MemoryTrack()
+    track.apply(memory_msg(2, [(5.0, 10), (6.0, 20)]))
+    track.apply(memory_msg(4, [(4.0, 30), (7.0, 40)]))  # a thread drained later, but earlier in time
+    assert [t for t, _ in track.samples] == [4.0, 5.0, 6.0, 7.0]
+
+
+def test_allocation_levels_take_each_slices_peak_and_carry_the_level_across_gaps():
+    track = MemoryTrack(samples=[(1.0, 100), (2.0, 500), (2.5, 50), (7.0, 0)])
+    # Slices [0,2] [2,4] [4,6] [6,8]: the 500 inside the second, then 50 held until 7.
+    assert track.levels(0.0, 8.0, 4) == [500, 500, 50, 50]
+    assert track.levels(3.0, 6.0, 1) == [50]
+    assert track.peak(0.0, 8.0) == 500
+    assert track.levels(1.0, 1.0, 4) == []
+
+
+def test_the_allocation_track_saves_with_the_session(tmp_path):
+    session = Session("s1", "mine", snapshot=parse_snapshot(snapshot_msg()))
+    state = StreamState()
+    state.apply(memory_msg(2, [(1.0, 64), (2.0, 192)], live=[(128, 2.0, "solve"), (64, 1.0, "")]))
+    session.memory = state.memory
+    path = tmp_path / "s.json"
+    write_session_file(path, [session])
+    loaded = session_from_dict(read_session_file(path)[0], "x")
+    assert loaded.memory == session.memory
+    # The server's export carries the same object under the same key.
+    assert session_from_dict(server_export() | {"memory": memory_msg(1, [(0.5, 8)])}, "y").memory.samples == [(0.5, 8)]
+
+
+# ── the shared time window ────────────────────────────────────────────────────
+
+
+def time_window():
+    pytest.importorskip("textual")
+    from waggle.widgets.graphs import TimeWindow
+
+    return TimeWindow()
+
+
+def test_the_time_window_shows_everything_until_zoomed():
+    window = time_window()
+    assert window.resolve((10.0, 110.0)) == (10.0, 110.0)
+    window.pan(0.5, (10.0, 110.0))  # nothing to pan across
+    assert window.resolve((10.0, 110.0)) == (10.0, 110.0)
+
+
+def test_zooming_while_following_keeps_the_right_edge_on_the_newest_data():
+    window = time_window()
+    window.zoom(4.0, (0.0, 100.0))
+    assert window.following and window.resolve((0.0, 100.0)) == (75.0, 100.0)
+    assert window.resolve((0.0, 200.0)) == (175.0, 200.0)  # more data arrived
+
+
+def test_zooming_about_a_point_keeps_it_in_place():
+    window = time_window()
+    window.zoom(2.0, (0.0, 100.0), anchor_ms=20.0)
+    start, end = window.resolve((0.0, 100.0))
+    assert (start, end) == (10.0, 60.0) and not window.following
+    assert (20.0 - start) / (end - start) == pytest.approx(0.2)
+
+
+def test_panning_fixes_the_window_and_panning_to_the_end_follows_again():
+    window = time_window()
+    window.zoom(4.0, (0.0, 100.0))
+    window.pan(-1.0, (0.0, 100.0))
+    assert window.resolve((0.0, 100.0)) == (50.0, 75.0) and not window.following
+    window.pan(-10.0, (0.0, 100.0))  # stops at the first data
+    assert window.resolve((0.0, 100.0)) == (0.0, 25.0)
+    window.pan(10.0, (0.0, 100.0))
+    assert window.following
+
+
+def test_zooming_out_past_the_data_shows_all_of_it():
+    window = time_window()
+    window.zoom(4.0, (0.0, 100.0))
+    window.zoom(0.1, (0.0, 100.0))
+    assert window.width_ms is None and window.following
 
 
 # ── analysis ──────────────────────────────────────────────────────────────────
@@ -351,6 +452,68 @@ def test_live_session_draws_and_every_key_runs():
         server.close()
 
     asyncio.run(main())
+
+
+@needs_textual
+def test_the_allocation_track_lines_up_with_the_gantt_chart_and_zooms_with_it():
+    from textual import events
+
+    mod = app_module()
+    timeline = {"type": "timeline", "events": [{"tid": 7, "name": "solve", "start_ms": 0.0, "end_ms": 100.0}]}
+    memory = memory_msg(3, [(10.0, 4096), (50.0, 1 << 20), (90.0, 4096)], live=[(4096, 90.0, "solve")], untracked=1)
+
+    async def main():
+        server, port = await fake_server([(json.dumps(m) + "\n").encode() for m in (META, snapshot_msg(1), timeline, memory)])
+        app = mod.ProfilerApp([("127.0.0.1", port)], mdns=False)
+        async with app.run_test(size=(140, 60)) as pilot:
+            await wait_for(pilot, lambda: app.active_session is not None and app.active_session.memory is not None)
+            await pilot.press("G", "m")
+            await pilot.pause()
+            gantt, track = app.query_one(mod.GanttChart), app.query_one(mod.AllocationTrack)
+            assert gantt._window == track._window == (0.0, 100.0)
+            text = track.render().plain
+            assert "1.0M" in text and "solve" in text and "0x1000" in text and "not listed" in text
+
+            await pilot.press("right_square_bracket")
+            await pilot.pause()
+            assert gantt._window == track._window == (50.0, 100.0)
+            await pilot.press("left_curly_bracket")
+            await pilot.pause()
+            assert track._window == (37.5, 87.5)
+            # The block was allocated at 90 ms: not yet live at this window's end.
+            assert "0x1000" not in track.render().plain
+
+            # The wheel zooms about the time under the pointer, on either chart.
+            x = track.LABEL_WIDTH + track.chart_width // 2
+            anchor = track._time_at(x)
+            track.post_message(events.MouseScrollUp(track, x, 3, 0, -1, 0, False, False, False))
+            await pilot.pause()
+            start, end = track._window
+            assert end - start == pytest.approx(25.0) and gantt._window == track._window
+            assert (anchor - start) / (end - start) == pytest.approx((x - track.LABEL_WIDTH) / track.chart_width)
+
+            await pilot.press("0")
+            await pilot.pause()
+            assert track._window == (0.0, 100.0)
+
+            # "[" once read as the start of a markup tag and swallowed the help after it.
+            await pilot.press("question_mark")
+            await pilot.pause()
+            help_text = str(app.screen.query_one("VerticalScroll Static").render())
+            assert "  [          Zoom out\n" in help_text and "[/]" not in help_text
+            await pilot.press("escape", "q")
+        server.close()
+
+    asyncio.run(main())
+
+
+def test_help_shows_the_character_a_key_types():
+    pytest.importorskip("textual")
+    from waggle.app import key_label
+
+    assert [key_label(k) for k in ("question_mark", "slash", "right_square_bracket", "space", "ctrl+s", "G")] == [
+        "?", "/", "]", "space", "ctrl+s", "G",
+    ]  # fmt: skip
 
 
 @needs_textual

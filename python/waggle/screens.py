@@ -11,6 +11,7 @@ from rich.markup import escape
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.content import Content
 from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Input, Label, SelectionList, Static
 
@@ -196,11 +197,15 @@ class HelpScreen(Dialog):
         self._title = title
 
     def compose(self) -> ComposeResult:
-        lines = ["[bold underline]Keys[/]  (also searchable in the command palette, ctrl+p)"]
+        # Assembled rather than written as markup: no escaping keeps a key like "[" from reading as
+        # the start of a tag.
+        parts: list[str | tuple[str, str] | Content] = [("Keys", "bold underline"), "  (also searchable in the command palette, ctrl+p)\n"]
         for section, keys in self._keymap:
-            lines.append(f"\n[bold]{section}[/]")
-            lines += [f"  [bold cyan]{escape(key):<10}[/] {escape(desc)}" for key, desc in keys]
+            parts += ["\n", (section, "bold"), "\n"]
+            for key, desc in keys:
+                parts += ["  ", (f"{key:<10}", "bold cyan"), f" {desc}\n"]
+        parts += ["\n", Content.from_markup(COLUMN_HELP + "\n" + PANEL_HELP)]
         with Vertical(classes="dialog large"):
             yield Label(f"[bold]{escape(self._title)}[/bold]")
             with VerticalScroll():
-                yield Static("\n".join(lines) + "\n\n" + COLUMN_HELP + "\n" + PANEL_HELP)
+                yield Static(Content.assemble(*parts))

@@ -13,10 +13,11 @@ from pathlib import Path
 from typing import Any
 
 from rich.text import Text
-from textual import work
+from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.css.query import NoMatches
+from textual.keys import key_to_character
 from textual.widgets import DataTable, Footer, Header, Input, TabbedContent, TabPane
 
 from .client import DEFAULT_HOST, DEFAULT_PORT, ProfileClient, Recorder, StreamState, parse_endpoint, read_recording
@@ -27,7 +28,7 @@ from .model import ProfileMeta, ProfileNode
 from .plugin import PluginPanel, ViewerPlugin
 from .screens import CompareScreen, ConfirmDialog, HelpScreen, PromptDialog, SessionsDialog
 from .session import Session, export_snapshot, read_session_file, session_from_dict, write_session_file
-from .widgets.graphs import FlameGraph, GanttChart, RooflinePlot, TimelinePlot
+from .widgets.graphs import AllocationTrack, FlameGraph, GanttChart, RooflinePlot, TimeWindow, TimelinePlot, time_extent
 from .widgets.panels import (
     LogPanel,
     ResizeHandle,
@@ -74,11 +75,19 @@ KEYMAP: list[tuple[str, list[tuple[str, str, str, str | None]]]] = [
         ("g", "toggle_panel('timeline')", "Timeline of CPU and memory", None),
         ("o", "toggle_panel('roofline')", "Roofline", None),
         ("G", "toggle_panel('gantt')", "Thread Gantt chart", None),
+        ("m", "toggle_panel('memory')", "Allocation track: live bytes and live allocations", None),
         ("M", "toggle_panel('counters')", "Hardware counters", None),
         ("A", "toggle_panel('disasm')", "Disassembly", None),
         ("V", "toggle_panel('source')", "Source", None),
         ("L", "toggle_panel('log')", "Log", None),
         ("l", "cycle_log_level", "Log level: INFO → WARN → ERROR → TRACE → DEBUG", None),
+    ]),
+    ("Time (Gantt chart and allocation track; the mouse wheel zooms too)", [
+        ("right_square_bracket", "zoom_time(2.0)", "Zoom in", None),
+        ("left_square_bracket", "zoom_time(0.5)", "Zoom out", None),
+        ("left_curly_bracket", "pan_time(-0.25)", "Earlier", None),
+        ("right_curly_bracket", "pan_time(0.25)", "Later (to the newest data, it follows again)", None),
+        ("0", "reset_time", "Show all the time recorded", None),
     ]),
     ("Sessions", [
         ("t", "connect", "Connect to a server", "Connect"),
@@ -95,9 +104,21 @@ KEYMAP: list[tuple[str, list[tuple[str, str, str, str | None]]]] = [
 ]  # fmt: skip
 
 #: Panel name -> widget id. Every one starts hidden. Plugins add panels of their own.
-PANELS = ("hotspots", "flame", "timeline", "roofline", "gantt", "counters", "disasm", "source", "log")
+PANELS = ("hotspots", "flame", "timeline", "roofline", "gantt", "memory", "counters", "disasm", "source", "log")
 
 REFRESH_INTERVAL = 0.25  # seconds between redraws of sessions with new data
+
+
+#: Key names Textual does not map to the character they type.
+_KEY_GLYPHS = {"slash": "/", "plus": "+", "minus": "-"}
+
+
+def key_label(key: str) -> str:
+    """What the help screen shows for a binding: ``?`` for ``question_mark``, ``]`` for ``right_square_bracket``."""
+    if key in _KEY_GLYPHS:
+        return _KEY_GLYPHS[key]
+    char = key_to_character(key)
+    return char if char is not None and char.isprintable() and not char.isspace() else key
 
 
 def _widget_id(text: str) -> str:
@@ -168,6 +189,8 @@ class ProfilerApp(App):
         self._name_filter = ""
         self._event = "Starting"
         self._disasm_target: tuple[str, str] | None = None
+        #: The time the Gantt chart and the allocation track show; reset when the session changes.
+        self._time = TimeWindow()
         #: The live connection each session came from, for requests to its server.
         self._session_clients: dict[str, ProfileClient] = {}
 
@@ -181,6 +204,7 @@ class ProfilerApp(App):
         yield TimelinePlot(id="timeline", classes="panel")
         yield RooflinePlot(id="roofline", classes="panel")
         yield GanttChart(id="gantt", classes="panel")
+        yield AllocationTrack(id="memory", classes="panel")
         yield TextPanel("Select a row", id="counters", classes="panel")
         yield TextPanel("Select a row", id="disasm", classes="panel")
         yield TextPanel("Select a row", id="source", classes="panel")
@@ -274,6 +298,7 @@ class ProfilerApp(App):
             pane = event.pane.id or ""
             self._active = pane.removeprefix("session-")
             self.query_one("#log", LogPanel).reset()
+            self._time.reset()
         self._refresh_panels()
         self._show_selected()
 
@@ -283,6 +308,8 @@ class ProfilerApp(App):
             session.record_snapshot(state.snapshot)
         elif kind == "timeline":
             session.timeline = state.timeline
+        elif kind == "memory":
+            session.memory = state.memory
         elif kind in ("log", "output"):
             session.log_entries, session.log_total = state.log_entries, state.log_total
         else:
@@ -340,8 +367,13 @@ class ProfilerApp(App):
             self.query_one(TimelinePlot).record(session.snapshot)
         if self._visible("roofline"):
             self.query_one(RooflinePlot).set_roots(roots)
-        if self._visible("gantt"):
-            self.query_one(GanttChart).set_events(session.timeline)
+        if self._visible("gantt") or self._visible("memory"):
+            extent = time_extent(session.timeline, session.memory)
+            window = self._time.resolve(extent) if extent is not None else None
+            if self._visible("gantt"):
+                self.query_one(GanttChart).set_events(session.timeline, window)
+            if self._visible("memory"):
+                self.query_one(AllocationTrack).set_track(session.memory, window)
         if self._visible("log"):
             self.query_one(LogPanel).show(session.log_entries, session.log_total)
 
@@ -546,9 +578,9 @@ class ProfilerApp(App):
         self.exit()
 
     def action_help(self) -> None:
-        keymap = [(section, [(k, d) for k, _, d, _ in keys]) for section, keys in KEYMAP]
+        keymap = [(section, [(key_label(k), d) for k, _, d, _ in keys]) for section, keys in KEYMAP]
         for plugin in self._plugins:
-            keys = [(p.key, p.description) for p in plugin.panels] + [(a.key, a.description) for a in plugin.actions]
+            keys = [(key_label(p.key), p.description) for p in plugin.panels] + [(key_label(a.key), a.description) for a in plugin.actions]
             if keys:
                 keymap.append((plugin.title, keys))
         self.push_screen(HelpScreen(keymap, title=self.title))
@@ -690,6 +722,30 @@ class ProfilerApp(App):
                 widget.focus()
             if panel == "roofline" and not self.query_one(RooflinePlot).points:
                 self.notify("No zone has flops and bytes_read/bytes_written annotations", severity="warning")
+
+    def _time_extent(self) -> tuple[float, float] | None:
+        session = self.active_session
+        return time_extent(session.timeline, session.memory) if session is not None else None
+
+    def action_zoom_time(self, factor: float, anchor_ms: float | None = None) -> None:
+        extent = self._time_extent()
+        if extent is not None:
+            self._time.zoom(factor, extent, anchor_ms)
+            self._refresh_panels()
+
+    def action_pan_time(self, fraction: float) -> None:
+        extent = self._time_extent()
+        if extent is not None:
+            self._time.pan(fraction, extent)
+            self._refresh_panels()
+
+    def action_reset_time(self) -> None:
+        self._time.reset()
+        self._refresh_panels()
+
+    @on(AllocationTrack.ZoomAt)
+    def _zoom_at(self, message: AllocationTrack.ZoomAt) -> None:
+        self.action_zoom_time(message.factor, message.anchor_ms)
 
     def action_cycle_log_level(self) -> None:
         level = self.query_one(LogPanel).cycle_level()

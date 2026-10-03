@@ -1,7 +1,7 @@
 # Copyright (c) The Einsums Developers. All rights reserved.
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 
-"""Graphical panels: flame graph, thread Gantt chart, and the plotext timeline and roofline."""
+"""Graphical panels: flame graph, thread Gantt chart, allocation track, and the plotext timeline and roofline."""
 
 from __future__ import annotations
 
@@ -19,8 +19,8 @@ from textual.widget import Widget
 from textual.widgets import Static
 
 from ..analysis import RooflinePoint, roofline_points, sum_exclusive, sum_mem_current
-from ..format import flame_color
-from ..model import ProfileNode, ProfileSnapshot, TimelineEvent
+from ..format import flame_color, format_bytes
+from ..model import MemoryTrack, ProfileNode, ProfileSnapshot, TimelineEvent
 
 try:
     from textual_plotext import PlotextPlot
@@ -151,37 +151,174 @@ class FlameGraph(Widget):
         self.zoom_out()
 
 
-class GanttChart(Widget):
-    """Recent zone spans per thread, from the server's ``timeline`` messages."""
+#: The narrowest window the timeline zooms to: one microsecond.
+MIN_WINDOW_MS = 1e-3
+
+
+@dataclass
+class TimeWindow:
+    """The span of time the Gantt chart and the allocation track show, shared so they line up.
+
+    With no width it shows all the data; with no end its right edge stays on the newest data, so a
+    zoomed-in view of a live program keeps moving. Panning or zooming away from that edge fixes it.
+    """
+
+    width_ms: float | None = None
+    end_ms: float | None = None
+
+    @property
+    def following(self) -> bool:
+        return self.end_ms is None
+
+    def resolve(self, extent: tuple[float, float]) -> tuple[float, float]:
+        """The (start, end) shown, given the data's (first, last) times."""
+        lo, hi = extent
+        width = self.width_ms if self.width_ms is not None else hi - lo
+        end = self.end_ms if self.end_ms is not None else hi
+        return end - width, end
+
+    def zoom(self, factor: float, extent: tuple[float, float], anchor_ms: float | None = None) -> None:
+        """Narrow the window by *factor* (below 1 widens it), keeping *anchor_ms* where it is.
+
+        Without an anchor it zooms about the right edge while following and the middle otherwise.
+        """
+        lo, hi = extent
+        start, end = self.resolve(extent)
+        if end <= start or hi <= lo:
+            return
+        width = max((end - start) / factor, MIN_WINDOW_MS)
+        if width >= hi - lo:
+            self.reset()
+            return
+        if anchor_ms is None:
+            anchor_ms = end if self.following else (start + end) / 2
+        new_start = anchor_ms - (anchor_ms - start) / (end - start) * width
+        new_end = min(max(new_start + width, lo + width), hi)
+        self.width_ms = width
+        self.end_ms = None if new_end >= hi else new_end
+
+    def pan(self, fraction: float, extent: tuple[float, float]) -> None:
+        """Move the window by *fraction* of its width, later for a positive one."""
+        if self.width_ms is None:
+            return
+        lo, hi = extent
+        start, end = self.resolve(extent)
+        new_end = max(end + fraction * (end - start), lo + self.width_ms)
+        self.end_ms = None if new_end >= hi else new_end
+
+    def reset(self) -> None:
+        self.width_ms = self.end_ms = None
+
+
+def time_extent(events: list[TimelineEvent], memory: MemoryTrack | None) -> tuple[float, float] | None:
+    """The times the timeline panels span: the zone spans' when there are any, as the allocation
+    track follows the Gantt chart, else the allocation curve's."""
+    if events:
+        return min(e.start_ms for e in events), max(e.end_ms for e in events)
+    if memory is not None and memory.samples:
+        return memory.samples[0][0], memory.samples[-1][0]
+    return None
+
+
+def _format_ms(value: float, width: float) -> str:
+    """A time label with as many decimals as a window *width* ms wide needs."""
+    if width >= 50:
+        return f"{value:.0f}ms"
+    if width >= 0.5:
+        return f"{value:.2f}ms"
+    return f"{value * 1000:.1f}us"
+
+
+def _format_age(ms: float) -> str:
+    if ms < 1.0:
+        return f"{ms * 1000:.0f}us"
+    if ms < 1000.0:
+        return f"{ms:.1f}ms"
+    return f"{ms / 1000:.2f}s"
+
+
+def _time_axis(start: float, end: float, label_width: int, chart: int, label: str = "") -> Text:
+    header = Text(f"{label:<{label_width}}", style="bold")
+    step = max(1, chart // 5)
+    for col in range(0, chart, step):
+        tick = _format_ms(start + col / chart * (end - start), end - start)
+        if len(tick) >= chart - col:  # a label that would be cut off is left out
+            break
+        header.append(tick.ljust(min(step, chart - col)))
+    return header
+
+
+class _TimeChart(Widget):
+    """A chart with a label column and then time across, on the shared :class:`TimeWindow`.
+
+    The mouse wheel zooms about the time under the pointer.
+    """
 
     LABEL_WIDTH = 14
+
+    class ZoomAt(Message):
+        """Zoom by ``factor`` keeping ``anchor_ms`` under the pointer."""
+
+        def __init__(self, factor: float, anchor_ms: float) -> None:
+            super().__init__()
+            self.factor = factor
+            self.anchor_ms = anchor_ms
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._window: tuple[float, float] | None = None
+
+    @property
+    def chart_width(self) -> int:
+        return max(10, (self.size.width or 120) - self.LABEL_WIDTH - 1)
+
+    def _time_at(self, x: int) -> float | None:
+        if self._window is None or x < self.LABEL_WIDTH:
+            return None
+        start, end = self._window
+        return start + (x - self.LABEL_WIDTH) / self.chart_width * (end - start)
+
+    def _wheel(self, event: Any, factor: float) -> None:
+        anchor = self._time_at(event.x)
+        if anchor is not None:
+            event.stop()
+            self.post_message(self.ZoomAt(factor, anchor))
+
+    def on_mouse_scroll_up(self, event: Any) -> None:
+        self._wheel(event, 2.0)
+
+    def on_mouse_scroll_down(self, event: Any) -> None:
+        self._wheel(event, 0.5)
+
+
+class GanttChart(_TimeChart):
+    """Recent zone spans per thread, from the server's ``timeline`` messages."""
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._events: list[TimelineEvent] = []
 
-    def set_events(self, events: list[TimelineEvent]) -> None:
+    def set_events(self, events: list[TimelineEvent], window: tuple[float, float] | None = None) -> None:
+        """Show *events* over *window*, (start, end) in ms; all of them without one."""
         self._events = events
+        self._window = window if window is not None else time_extent(events, None)
         self.refresh()
 
     def render(self) -> Text:
-        if not self._events:
+        if not self._events or self._window is None:
             return Text("No timeline data (it streams only from a live connection)", style="dim")
-        t0 = min(e.start_ms for e in self._events)
-        span = max(e.end_ms for e in self._events) - t0
+        t0, t1 = self._window
+        span = t1 - t0
         if span <= 0:
             return Text("No time range", style="dim")
-        chart = max(10, (self.size.width or 120) - self.LABEL_WIDTH - 1)
+        chart = self.chart_width
 
-        header = Text(f"{'thread':<{self.LABEL_WIDTH}}", style="bold")
-        step = max(1, chart // 5)
-        for col in range(0, chart, step):
-            header.append(f"{t0 + col / chart * span:.0f}ms".ljust(step)[: chart - col])
-        lines = [header]
+        lines = [_time_axis(t0, t1, self.LABEL_WIDTH, chart, "thread")]
 
         threads: dict[str, list[TimelineEvent]] = {}
         for event in self._events:
-            threads.setdefault(event.thread_id, []).append(event)
+            if event.end_ms >= t0 and event.start_ms <= t1:
+                threads.setdefault(event.thread_id, []).append(event)
         for tid, events in sorted(threads.items())[: max(1, (self.size.height or 20) - 1)]:
             # The innermost zone wins a cell: later (nested) events overwrite earlier ones.
             owner: list[TimelineEvent | None] = [None] * chart
@@ -206,6 +343,78 @@ class GanttChart(Widget):
                 col = end
             lines.append(line)
         return _join(lines)
+
+
+class AllocationTrack(_TimeChart):
+    """Live bytes over the timeline's window, and the allocations still live then, largest first."""
+
+    CURVE_ROWS = 6
+    LISTED = 12
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._memory: MemoryTrack | None = None
+
+    def set_track(self, memory: MemoryTrack | None, window: tuple[float, float] | None) -> None:
+        self._memory = memory
+        self._window = window
+        self.refresh()
+
+    def render(self) -> Text:
+        memory = self._memory
+        if memory is None:
+            return Text("No allocation track: the program sends one from a live connection or a saved session", style="dim")
+        lines = [self._summary(memory)]
+        if self._window is not None and self._window[1] > self._window[0]:
+            lines.extend(self._curve(memory, *self._window))
+        lines.extend(self._listing(memory))
+        return _join(lines)
+
+    def _summary(self, memory: MemoryTrack) -> Text:
+        line = Text("Live ", style="bold")
+        line.append(format_bytes(memory.live_bytes) or "0B")
+        if self._window is not None:
+            line.append(f"   peak in view {format_bytes(memory.peak(*self._window)) or '0B'}")
+        if memory.untracked:
+            line.append(f"   {memory.untracked} allocation(s) on the curve are not listed: no address given, or the list was full", style="dim")
+        return line
+
+    def _curve(self, memory: MemoryTrack, start: float, end: float) -> list[Text]:
+        chart = self.chart_width
+        levels = memory.levels(start, end, chart)
+        top = max(levels, default=0)
+        rows: list[Text] = []
+        for row in range(self.CURVE_ROWS, 0, -1):
+            label = format_bytes(top) if row == self.CURVE_ROWS else ("0B" if row == 1 else "")
+            line = Text(label.rjust(self.LABEL_WIDTH - 1) + " ", style="dim")
+            cells = []
+            for level in levels:
+                eighths = int(level / top * self.CURVE_ROWS * 8) if top > 0 else 0
+                fill = max(0, min(8, eighths - (row - 1) * 8))
+                cells.append(_EIGHTHS_UP[fill])
+            line.append("".join(cells), style="cyan")
+            rows.append(line)
+        rows.append(_time_axis(start, end, self.LABEL_WIDTH, chart))
+        return rows
+
+    def _listing(self, memory: MemoryTrack) -> list[Text]:
+        end = self._window[1] if self._window is not None else None
+        # Live at the window's end: allocated by then and not freed since.
+        shown = [a for a in memory.live if end is None or a.t_ms <= end]
+        if not shown:
+            return [Text("No allocation with an address is live", style="dim")]
+        now = memory.samples[-1][0] if memory.samples else max(a.t_ms for a in shown)
+        out = [Text(f"{'bytes':>10}  {'age':>10}  {'thread':<8}{'address':<20}zone", style="bold")]
+        for a in shown[: self.LISTED]:
+            age = _format_age(max(0.0, now - a.t_ms))
+            out.append(Text(f"{format_bytes(a.bytes):>10}  {age:>10}  {'T' + a.thread_id:<8}{a.address:<20}{a.zone or '(no zone)'}"))
+        if len(shown) > self.LISTED:
+            out.append(Text(f"... and {len(shown) - self.LISTED} more", style="dim"))
+        return out
+
+
+#: Cells filled from the bottom in eighths, for the allocation curve.
+_EIGHTHS_UP = " ▁▂▃▄▅▆▇█"
 
 
 class _MissingPlotext(Static):

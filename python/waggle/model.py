@@ -6,7 +6,7 @@
 The server (``src/Server.cpp``) sends JSON Lines over TCP. Each
 line is one message with a ``type``: ``meta`` once per connection, then ``snapshot``
 (the aggregated call tree of every thread), ``timeline`` (recent zone spans),
-``log``, ``output``, ``benchmark_result``, and ``response`` to a ``request``.
+``memory`` (the allocation track), ``log``, ``output``, ``benchmark_result``, and ``response`` to a ``request``.
 
 Nothing in this module imports Textual, so the bench commands and the tests use it
 without the UI dependency.
@@ -14,6 +14,7 @@ without the UI dependency.
 
 from __future__ import annotations
 
+import bisect
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -109,6 +110,115 @@ class TimelineEvent:
     name: str = ""
     start_ms: float = 0.0
     end_ms: float = 0.0
+
+
+@dataclass
+class LiveAllocation:
+    """A block allocated with its address and not freed yet."""
+
+    address: str = ""
+    bytes: int = 0
+    #: When it was allocated, on the timeline's clock.
+    t_ms: float = 0.0
+    thread_id: str = ""
+    #: The zone open when it was allocated; empty outside every zone.
+    zone: str = ""
+
+
+@dataclass
+class MemoryTrack:
+    """Live bytes over time, and the largest allocations not yet freed, from ``memory`` messages.
+
+    The server sends the whole curve to a viewer that connects and then only what is new, so
+    :meth:`apply` appends; the list of live allocations is the server's current one each time.
+    """
+
+    #: (time in ms on the timeline's clock, live bytes), in time order.
+    samples: list[tuple[float, int]] = field(default_factory=list)
+    live: list[LiveAllocation] = field(default_factory=list)
+    live_bytes: int = 0
+    #: Allocations that move the curve but are never listed: recorded without an address, or
+    #: made while the server's table of live allocations was full.
+    untracked: int = 0
+    #: The sequence number of the newest sample held.
+    seq: int = 0
+
+    MAX_SAMPLES = 65536
+
+    def apply(self, data: dict[str, Any]) -> None:
+        raw = [s for s in data.get("samples") or [] if isinstance(s, (list, tuple)) and len(s) == 2]
+        if "seq" in data:
+            # The samples are consecutive and end at seq; drop the ones already held.
+            last = int(data["seq"])
+            first = last - len(raw) + 1
+            raw = raw[max(0, self.seq + 1 - first) :]
+            self.seq = max(self.seq, last)
+        new = [(float(t), int(b)) for t, b in raw]
+        if new:
+            ordered = not self.samples or new[0][0] >= self.samples[-1][0]
+            self.samples.extend(new)
+            # Threads are drained in turn, so samples from two of them can arrive out of order.
+            if not ordered or any(a[0] > b[0] for a, b in zip(new, new[1:])):
+                self.samples.sort(key=lambda s: s[0])
+            del self.samples[: -self.MAX_SAMPLES]
+        self.live = [
+            LiveAllocation(
+                address=str(a.get("address", "")),
+                bytes=int(a.get("bytes", 0)),
+                t_ms=float(a.get("t_ms", 0.0)),
+                thread_id=str(a.get("tid", "")),
+                zone=str(a.get("zone", "")),
+            )
+            for a in data.get("live") or []
+            if isinstance(a, dict)
+        ]
+        self.live_bytes = int(data.get("live_bytes", self.samples[-1][1] if self.samples else 0))
+        self.untracked = int(data.get("untracked", 0))
+
+    def peak(self, start_ms: float, end_ms: float) -> int:
+        """The most bytes live at any time in [start_ms, end_ms]."""
+        return max(self.levels(start_ms, end_ms, 1), default=0)
+
+    def levels(self, start_ms: float, end_ms: float, count: int) -> list[int]:
+        """The most bytes live in each of *count* equal slices of [start_ms, end_ms].
+
+        A slice with no sample of its own holds the level the last sample before it left.
+        """
+        if count <= 0 or end_ms <= start_ms:
+            return []
+        out = [0] * count
+        times = [t for t, _ in self.samples]
+        i = bisect.bisect_right(times, start_ms)
+        level = self.samples[i - 1][1] if i > 0 else 0
+        width = (end_ms - start_ms) / count
+        for col in range(count):
+            hi = start_ms + (col + 1) * width
+            peak = level
+            while i < len(self.samples) and self.samples[i][0] <= hi:
+                level = self.samples[i][1]
+                peak = max(peak, level)
+                i += 1
+            out[col] = peak
+        return out
+
+
+def parse_memory(data: dict[str, Any]) -> MemoryTrack:
+    track = MemoryTrack()
+    track.apply(data)
+    return track
+
+
+def memory_to_dict(track: MemoryTrack) -> dict[str, Any]:
+    """The shape of a ``memory`` message holding the whole track."""
+    return {
+        "live_bytes": track.live_bytes,
+        "untracked": track.untracked,
+        "seq": track.seq,
+        "samples": [[t, b] for t, b in track.samples],
+        "live": [
+            {"address": a.address, "bytes": a.bytes, "t_ms": a.t_ms, "tid": a.thread_id, "zone": a.zone} for a in track.live
+        ],
+    }
 
 
 @dataclass

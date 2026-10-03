@@ -30,10 +30,13 @@ from typing import Any
 from .analysis import exclusive_by_name, is_anomaly, walk
 from .model import (
     LogEntry,
+    MemoryTrack,
     ProfileMeta,
     ProfileSnapshot,
     TimelineEvent,
+    memory_to_dict,
     meta_to_dict,
+    parse_memory,
     parse_meta,
     parse_snapshot,
     snapshot_to_dict,
@@ -54,6 +57,8 @@ class Session:
     snapshot: ProfileSnapshot | None = None
     baseline: ProfileSnapshot | None = None
     timeline: list[TimelineEvent] = field(default_factory=list)
+    #: The allocation track; None when the program sent none.
+    memory: MemoryTrack | None = None
     #: Exclusive time of each zone name over recent snapshots, for the detail panel's sparkline.
     history: dict[str, deque[float]] = field(default_factory=dict)
     bookmarks: set[str] = field(default_factory=set)
@@ -83,6 +88,8 @@ def session_to_dict(session: Session) -> dict[str, Any]:
         data["bookmarks"] = sorted(session.bookmarks)
     if session.snapshot:
         data["snapshot"] = snapshot_to_dict(session.snapshot)
+    if session.memory is not None:
+        data["memory"] = memory_to_dict(session.memory)
     if session.history:
         data["node_history"] = {name: list(values) for name, values in session.history.items()}
     if session.extensions:
@@ -103,6 +110,8 @@ def session_from_dict(data: dict[str, Any], session_id: str, source: str = "") -
         session.snapshot = parse_snapshot(data["snapshot"])
     elif "threads" in data:
         session.snapshot = parse_snapshot(data)
+    if isinstance(data.get("memory"), dict):
+        session.memory = parse_memory(data["memory"])
     for name, values in (data.get("node_history") or {}).items():
         session.history[name] = deque(values, maxlen=HISTORY_LENGTH)
     if isinstance(data.get("extensions"), dict):
