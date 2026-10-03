@@ -24,6 +24,9 @@ enum class EventType : uint8_t {
     SetThreadName,
     MemAlloc,
     MemFree,
+    /// A zone that opened and closed with nothing recorded inside it: its Push and Pop in one
+    /// event, @ref Event::ticks its start and @c zone.end_ticks its end.
+    Zone,
 };
 
 /// Which member of an @ref AnnotationPayload's value an annotation filled.
@@ -48,7 +51,7 @@ struct AnnotationPayload {
  * @brief One record in a thread's ring buffer, exactly one cache line.
  *
  * Each event type uses one arm of the trailing union: Push and Pop the hardware counters, Annotate
- * the annotation, MemAlloc and MemFree the byte count.
+ * the annotation, MemAlloc and MemFree the byte count, Zone its end.
  */
 struct alignas(64) Event {
     /// Raw @ref TickClock ticks; the consumer converts them with TickClock::to_time_point.
@@ -78,6 +81,10 @@ struct alignas(64) Event {
             uint64_t address;
             int64_t  bytes;
         } mem;
+        /// For Zone: when it closed, in raw ticks.
+        struct {
+            uint64_t end_ticks;
+        } zone;
     };
 };
 

@@ -121,7 +121,8 @@ void Consumer::reset() {
         }
     }
 
-    TimePoint const now = TickClock::instance().to_time_point(TickClock::now());
+    _reset_ticks        = TickClock::now();
+    TimePoint const now = TickClock::instance().to_time_point(_reset_ticks);
     for (auto &[id, ts] : _threads) {
         // An explicit stack, as everywhere the tree is walked.
         std::vector<AggNode *> pending{&ts.root};
@@ -219,6 +220,22 @@ void Consumer::process_event(uint32_t thread_id, Event const &evt) {
     case EventType::MemFree:
         process_mem(ts, evt);
         break;
+    case EventType::Zone: {
+        // Its Push and its Pop, as they would have arrived.
+        Event push{};
+        push.ticks   = evt.ticks;
+        push.type    = EventType::Push;
+        push.site_id = evt.site_id;
+        push.name_id = evt.name_id;
+        push.depth   = evt.depth;
+        process_push(ts, push);
+        Event pop{};
+        pop.ticks = evt.zone.end_ticks;
+        pop.type  = EventType::Pop;
+        pop.depth = evt.depth;
+        process_pop(ts, pop, thread_id);
+        break;
+    }
     }
 }
 
@@ -243,7 +260,7 @@ void Consumer::process_push(ThreadState &ts, Event const &evt) {
     ThreadState::StackFrame frame{};
     frame.name_id    = name_id;
     frame.child_time = ns{0};
-    frame.start      = TickClock::instance().to_time_point(evt.ticks);
+    frame.start      = TickClock::instance().to_time_point(std::max(evt.ticks, _reset_ticks));
     for (int i = 0; i < kNumCounterSlots; ++i)
         frame.counters[i] = evt.counters[i];
 

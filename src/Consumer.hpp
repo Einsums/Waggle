@@ -314,6 +314,11 @@ class WAGGLE_EXPORT Consumer {
     std::vector<TimelineRecord> _timeline;
     size_t                      _timeline_next{0};
 
+    /// When the last reset happened, in raw ticks; 0 before any. A zone open across a reset whose
+    /// Push was still waiting on its thread arrives afterwards with its real start, and is timed
+    /// from the reset, as a zone the reset found open is. Under _tree_mutex.
+    uint64_t _reset_ticks{0};
+
     /// The counter backend's slot names, read once, and whether it is active at all.
     bool                                      _counters_checked{false};
     bool                                      _counters_active{false};

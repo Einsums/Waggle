@@ -124,6 +124,38 @@ TEST_CASE("A merged snapshot combines the same zone from every thread", "[profil
     CHECK(total == 7);
 }
 
+// A zone's opening is written only once something happens inside it, so a zone with nothing inside
+// costs one event. One with something inside must still show, with what is inside, while open.
+TEST_CASE("A zone shows while open once something happens inside it", "[profiler][snapshot]") {
+    Recording const   on(true);
+    std::atomic<bool> inside{false}, done{false};
+    std::thread       worker([&] {
+        waggle::ScopedZone const parent("open: parent");
+        {
+            waggle::ScopedZone const child("open: child");
+        }
+        inside = true;
+        while (!done) {
+            std::this_thread::yield();
+        }
+    });
+    while (!inside) {
+        std::this_thread::yield();
+    }
+
+    auto const snapshot = waggle::Snapshot::take();
+    auto const parent   = snapshot.find("open: parent");
+    REQUIRE(parent);
+    CHECK(parent->stats().call_count == 0); // still open
+    auto const child = snapshot.find("open: parent/open: child");
+    REQUIRE(child);
+    CHECK(child->stats().call_count == 1);
+
+    done = true;
+    worker.join();
+    CHECK(waggle::Snapshot::take().find("open: parent")->stats().call_count == 1);
+}
+
 TEST_CASE("A reset keeps open zones, timed from the reset, and drops the rest", "[profiler][snapshot]") {
     Recording const                       on(true);
     uint32_t const                        id_before = waggle::intern_string("reset: open");

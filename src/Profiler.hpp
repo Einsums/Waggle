@@ -305,6 +305,9 @@ struct WAGGLE_EXPORT Profiler {
     // Emit an event to the thread-local ring buffer. Used by annotation API.
     WAGGLE_FORCEINLINE void emit_event(Event const &evt) {
         auto &ch = thread_channel();
+        if (ch.pending != 0) {
+            write_pending_push(ch); // the event belongs inside it
+        }
         (void)ch.ring.try_push(evt); // a refused push is counted by the ring
         wake_consumer_if_filling(ch);
     }
@@ -355,6 +358,14 @@ struct WAGGLE_EXPORT Profiler {
         std::atomic<uint64_t> pops{0};
         /// Zones open on this thread, stamped into every Push and Pop (see @ref Event::depth).
         uint32_t depth{0};
+        /// The depth of the innermost zone if its Push is not written yet, else 0. A zone's Push is
+        /// written only once something happens inside it, so a zone with nothing inside writes one
+        /// Zone event when it closes; only the innermost zone can be waiting.
+        uint32_t pending{0};
+        /// That zone's start and site, kept until its Push or Zone event is written.
+        uint64_t pending_ticks{0};
+        uint32_t pending_site{0};
+        uint32_t pending_name{0};
         /// Whether a hardware counter backend is active, read once when the thread registers.
         bool counters{false};
         /// Whether this thread has woken the consumer since its ring last passed half full.
@@ -447,20 +458,45 @@ struct WAGGLE_EXPORT Profiler {
     /// Run the push and pop paths into a scratch channel and time them, once.
     auto calibrated_overhead() -> Overhead const &;
 
-    /// Record a zone opening on @p ch: one clock read and one event written in place. A full ring
-    /// skips the clock and counter reads.
+    /// Record a zone opening on @p ch: one clock read. Its Push is written when something happens
+    /// inside it, which this does for the zone it opens in; a zone with nothing inside is written
+    /// whole when it closes. With hardware counters, which must be read as it opens, its Push is
+    /// written now.
     WAGGLE_FORCEINLINE void write_push(ThreadChannel &ch, uint32_t site_id, uint32_t name_id) {
         // Counted even when the event is dropped: the consumer resynchronizes on it.
         uint32_t const depth = ++ch.depth;
-        if (Event *evt = ch.ring.try_claim()) {
-            *evt = Event{.ticks = TickClock::now(), .type = EventType::Push, .site_id = site_id, .name_id = name_id, .depth = depth};
-            if (ch.counters) {
+        if (ch.pending != 0) {
+            write_pending_push(ch);
+        }
+        if (ch.counters) {
+            if (Event *evt = ch.ring.try_claim()) {
+                *evt = Event{.ticks = TickClock::now(), .type = EventType::Push, .site_id = site_id, .name_id = name_id, .depth = depth};
                 read_counters(*evt);
+                ch.ring.commit();
             }
+            wake_consumer_if_filling(ch);
+        } else {
+            ch.pending       = depth;
+            ch.pending_ticks = TickClock::now();
+            ch.pending_site  = site_id;
+            ch.pending_name  = name_id;
+        }
+        ch.pushes.store(ch.pushes.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+    }
+
+    /// Write the Push of @p ch's innermost zone, which was waiting for something to happen inside
+    /// it, with the time it opened.
+    void write_pending_push(ThreadChannel &ch) {
+        if (Event *evt = ch.ring.try_claim()) {
+            *evt = Event{.ticks   = ch.pending_ticks,
+                         .type    = EventType::Push,
+                         .site_id = ch.pending_site,
+                         .name_id = ch.pending_name,
+                         .depth   = ch.pending};
             ch.ring.commit();
         }
+        ch.pending = 0;
         wake_consumer_if_filling(ch);
-        ch.pushes.store(ch.pushes.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
     }
 
     /// Record a zone's closing on @p ch.
@@ -470,7 +506,19 @@ struct WAGGLE_EXPORT Profiler {
             return;
         }
         uint32_t const depth = ch.depth--;
-        if (Event *evt = ch.ring.try_claim()) {
+        if (ch.pending == depth) {
+            // Nothing happened inside it: the whole zone in one event.
+            if (Event *evt = ch.ring.try_claim()) {
+                *evt = Event{.ticks   = ch.pending_ticks,
+                             .type    = EventType::Zone,
+                             .site_id = ch.pending_site,
+                             .name_id = ch.pending_name,
+                             .depth   = depth,
+                             .zone    = {.end_ticks = TickClock::now()}};
+                ch.ring.commit();
+            }
+            ch.pending = 0;
+        } else if (Event *evt = ch.ring.try_claim()) {
             *evt = Event{.ticks = TickClock::now(), .type = EventType::Pop, .depth = depth};
             if (ch.counters) {
                 read_counters(*evt);
