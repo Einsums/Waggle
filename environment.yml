@@ -11,9 +11,6 @@ dependencies:
   - pybind11
   # apiary generates waggle._core from python/src/Core.hpp
   - apiary >=1.1,<2
-  # apiary parses with libclang, which takes its builtin headers (stddef.h, ...) from clang's resource
-  # directory; the Linux build compiles with GCC, so clang is here for that alone.
-  - clang
   - pytest
   - textual
   - pre-commit

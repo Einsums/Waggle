@@ -81,6 +81,7 @@ print(waggle.snapshot().find("solve").call_count)
 ```
 
 `waggle._core`, a compiled module over the C interface, does the recording; build it with `-DWAGGLE_BUILD_PYTHON=ON`, which needs [apiary](https://github.com/Einsums/Apiary) and pybind11.
+On Linux apiary also needs clang's builtin headers, from a `clang` matching its LLVM (`conda install "clang 23.*"` for apiary 1.1).
 Python zones belong to the domain `python` unless given another.
 
 ## One collector per process
