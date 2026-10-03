@@ -43,7 +43,8 @@ add_executable(waggle_Counters_test unit/Counters.cpp)
 target_link_libraries(waggle_Counters_test PRIVATE Waggle::internal Catch2::Catch2WithMain)
 add_dependencies(waggle_tests waggle_Counters_test)
 add_test(NAME ${WAGGLE_TEST_PREFIX}Counters COMMAND waggle_Counters_test "[backend]")
-set_tests_properties(${WAGGLE_TEST_PREFIX}Counters PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false" TIMEOUT 300)
+# A virtual machine with no counters skips the backend test (Catch2's exit code 4), as CI's Macs do.
+set_tests_properties(${WAGGLE_TEST_PREFIX}Counters PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false" TIMEOUT 300 SKIP_RETURN_CODE 4)
 add_test(NAME ${WAGGLE_TEST_PREFIX}CountersSource COMMAND waggle_Counters_test "[source]")
 set_tests_properties(${WAGGLE_TEST_PREFIX}CountersSource PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false;WAGGLE_SOURCES=counters" TIMEOUT 300)
 
