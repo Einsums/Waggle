@@ -8,6 +8,7 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <atomic>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -262,34 +263,68 @@ std::wstring widen(std::string const &text) {
 }
 } // namespace
 
+/// What the system's completion callbacks touch. Registration and deregistration each complete on a
+/// thread-pool thread, in either order, so this lives until both have: freed after the first, the
+/// second would write to freed memory (it did, when a server stopped right after starting).
+struct WindowsRegistration {
+    using FreeFn = VOID(WINAPI *)(PDNS_SERVICE_INSTANCE);
+
+    FreeFn                       free_instance = nullptr;
+    std::string                  name;
+    uint16_t                     port     = 0;
+    PDNS_SERVICE_INSTANCE        instance = nullptr;
+    DNS_SERVICE_REGISTER_REQUEST request{};
+    /// Requests whose completion has not run yet.
+    std::atomic<int> outstanding{0};
+    /// Set before deregistering: a registration still pending then completes cancelled, not failed.
+    std::atomic<bool> withdrawing{false};
+    /// Signaled when the last outstanding completion has run.
+    HANDLE idle = nullptr;
+
+    ~WindowsRegistration() {
+        if (instance != nullptr) {
+            free_instance(instance);
+        }
+        if (idle != nullptr) {
+            CloseHandle(idle);
+        }
+    }
+
+    static VOID WINAPI on_complete(DWORD status, PVOID context, PDNS_SERVICE_INSTANCE result) {
+        auto *self = static_cast<WindowsRegistration *>(context);
+        if (result != nullptr) {
+            self->free_instance(result);
+        }
+        if (status != ERROR_SUCCESS && !self->withdrawing.load()) {
+            diagnostic(DiagnosticLevel::Warning,
+                       fmt::format("Profile server: mDNS registration of '{}' failed (error {})", self->name, status));
+        }
+        if (self->outstanding.fetch_sub(1) == 1) {
+            SetEvent(self->idle);
+        }
+    }
+};
+
 struct MdnsAdvertisement::Backend {
     using ConstructFn  = PDNS_SERVICE_INSTANCE(WINAPI *)(PCWSTR, PCWSTR, PIP4_ADDRESS, PIP6_ADDRESS, WORD, WORD, WORD, DWORD, PCWSTR *,
                                                          PCWSTR *);
     using RegisterFn   = DWORD(WINAPI *)(PDNS_SERVICE_REGISTER_REQUEST, PDNS_SERVICE_CANCEL);
     using DeregisterFn = DWORD(WINAPI *)(PDNS_SERVICE_REGISTER_REQUEST, PDNS_SERVICE_CANCEL);
-    using FreeFn       = VOID(WINAPI *)(PDNS_SERVICE_INSTANCE);
 
-    HMODULE      dll           = nullptr;
-    ConstructFn  construct     = nullptr;
-    RegisterFn   register_fn   = nullptr;
-    DeregisterFn deregister    = nullptr;
-    FreeFn       free_instance = nullptr;
+    DeregisterFn         deregister = nullptr;
+    WindowsRegistration *reg        = nullptr;
+    bool                 registered = false;
 
-    std::string                  name;
-    uint16_t                     port     = 0;
-    PDNS_SERVICE_INSTANCE        instance = nullptr;
-    DNS_SERVICE_REGISTER_REQUEST request{};
-    bool                         registered = false;
-    /// Signaled by each completion: the deregistration's is awaited before the request goes away.
-    HANDLE done = nullptr;
-
-    explicit Backend(Service const &service) : name(service.name), port(service.port) {
-        dll = LoadLibraryW(L"dnsapi.dll");
+    explicit Backend(Service const &service) {
+        HMODULE const               dll           = LoadLibraryW(L"dnsapi.dll");
+        ConstructFn                 construct     = nullptr;
+        RegisterFn                  register_fn   = nullptr;
+        WindowsRegistration::FreeFn free_instance = nullptr;
         if (dll != nullptr) {
             construct     = reinterpret_cast<ConstructFn>(GetProcAddress(dll, "DnsServiceConstructInstance"));
             register_fn   = reinterpret_cast<RegisterFn>(GetProcAddress(dll, "DnsServiceRegister"));
             deregister    = reinterpret_cast<DeregisterFn>(GetProcAddress(dll, "DnsServiceDeRegister"));
-            free_instance = reinterpret_cast<FreeFn>(GetProcAddress(dll, "DnsServiceFreeInstance"));
+            free_instance = reinterpret_cast<WindowsRegistration::FreeFn>(GetProcAddress(dll, "DnsServiceFreeInstance"));
         }
         if (construct == nullptr || register_fn == nullptr || deregister == nullptr || free_instance == nullptr) {
             diagnostic(DiagnosticLevel::Debug, "Profile server: not advertised over mDNS (this Windows has no DNS-SD service)");
@@ -314,52 +349,55 @@ struct MdnsAdvertisement::Backend {
             key_ptrs.push_back(keys[i].c_str());
             value_ptrs.push_back(values[i].c_str());
         }
+
+        reg                = new WindowsRegistration;
+        reg->free_instance = free_instance;
+        reg->name          = service.name;
+        reg->port          = service.port;
         // No addresses: the system answers for its own host name.
-        instance = construct(instance_name.c_str(), host_name.c_str(), nullptr, nullptr, port, 0, 0, static_cast<DWORD>(keys.size()),
-                             key_ptrs.data(), value_ptrs.data());
-        done     = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-        if (instance == nullptr || done == nullptr) {
+        reg->instance = construct(instance_name.c_str(), host_name.c_str(), nullptr, nullptr, service.port, 0, 0,
+                                  static_cast<DWORD>(keys.size()), key_ptrs.data(), value_ptrs.data());
+        reg->idle     = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (reg->instance == nullptr || reg->idle == nullptr) {
             diagnostic(DiagnosticLevel::Warning, "Profile server: mDNS registration failed (could not describe the service)");
             return;
         }
-        request.Version                     = DNS_QUERY_REQUEST_VERSION1;
-        request.InterfaceIndex              = 0;
-        request.pServiceInstance            = instance;
-        request.pRegisterCompletionCallback = &Backend::on_complete;
-        request.pQueryContext               = this;
-        request.unicastEnabled              = FALSE;
-        DWORD const status                  = register_fn(&request, nullptr);
+        reg->request.Version                     = DNS_QUERY_REQUEST_VERSION1;
+        reg->request.InterfaceIndex              = 0;
+        reg->request.pServiceInstance            = reg->instance;
+        reg->request.pRegisterCompletionCallback = &WindowsRegistration::on_complete;
+        reg->request.pQueryContext               = reg;
+        reg->request.unicastEnabled              = FALSE;
+        reg->outstanding.store(1);
+        DWORD const status = register_fn(&reg->request, nullptr);
         if (status != DNS_REQUEST_PENDING) {
+            reg->outstanding.store(0);
             diagnostic(DiagnosticLevel::Warning, fmt::format("Profile server: mDNS registration failed (error {})", status));
             return;
         }
         registered = true;
+        diagnostic(DiagnosticLevel::Info,
+                   fmt::format("Profile server: registered mDNS service '{}' on port {}", service.name, service.port));
     }
 
     ~Backend() {
-        if (registered && deregister(&request, nullptr) == DNS_REQUEST_PENDING) {
-            WaitForSingleObject(done, 2000);
+        if (reg == nullptr) {
+            return;
         }
-        if (instance != nullptr) {
-            free_instance(instance);
+        if (registered) {
+            reg->withdrawing.store(true);
+            reg->outstanding.fetch_add(1);
+            if (deregister(&reg->request, nullptr) != DNS_REQUEST_PENDING) {
+                WindowsRegistration::on_complete(ERROR_SUCCESS, reg, nullptr); // no completion will come for it
+            }
+            if (WaitForSingleObject(reg->idle, 5000) != WAIT_OBJECT_0) {
+                // A completion is still to come and will touch reg: leave it allocated (and
+                // dnsapi.dll loaded) rather than free memory a system thread is about to use.
+                diagnostic(DiagnosticLevel::Warning, "Profile server: mDNS deregistration did not complete");
+                return;
+            }
         }
-        if (done != nullptr) {
-            CloseHandle(done);
-        }
-        // dnsapi.dll stays loaded: a completion the wait gave up on may still be running in it.
-    }
-
-    static VOID WINAPI on_complete(DWORD status, PVOID context, PDNS_SERVICE_INSTANCE result) {
-        auto *self = static_cast<Backend *>(context);
-        if (result != nullptr) {
-            self->free_instance(result);
-        }
-        if (status == ERROR_SUCCESS) {
-            diagnostic(DiagnosticLevel::Info, fmt::format("Profile server: mDNS service '{}' on port {} updated", self->name, self->port));
-        } else {
-            diagnostic(DiagnosticLevel::Warning, fmt::format("Profile server: mDNS registration failed (error {})", status));
-        }
-        SetEvent(self->done);
+        delete reg;
     }
 };
 

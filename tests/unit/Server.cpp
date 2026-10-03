@@ -101,6 +101,26 @@ TEST_CASE("A handler registered before the server starts is answered", "[profile
     close_client(client);
 }
 
+// A server stopped while its mDNS registration was still pending freed the registration's state
+// after the first of its two completions; the second then wrote to freed memory on a system
+// thread, crashing whichever test ran next (seen on Windows).
+TEST_CASE("Servers stopped right after starting leave nothing running behind them", "[profiler][server]") {
+    StringTable     strings;
+    SiteTable       sites;
+    Consumer        consumer(strings, sites);
+    RequestHandlers handlers;
+    for (int i = 0; i < 20; ++i) {
+        Server server(consumer, strings, handlers, "127.0.0.1", free_port());
+        REQUIRE(server.is_running());
+        server.shutdown();
+    }
+    // Time for any completion still to come to run, inside this test.
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    Server server(consumer, strings, handlers, "127.0.0.1", free_port());
+    CHECK(server.is_running());
+    server.shutdown();
+}
+
 TEST_CASE("A published message reaches a connected viewer with its type", "[profiler][server]") {
     StringTable     strings;
     SiteTable       sites;
