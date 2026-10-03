@@ -24,11 +24,32 @@ except ImportError:  # pragma: no cover - depends on the environment
     HAVE_ZEROCONF = False
 
 
-def _local_addresses() -> set[str]:
+def is_local_address(address: str) -> bool:
+    """Whether *address* belongs to this machine: a socket binds only to an address it owns.
+
+    The host name's addresses are not enough: a responder advertises on every interface, a
+    container bridge's among them, and the host name resolves to none of those.
+    """
+    family = socket.AF_INET6 if ":" in address else socket.AF_INET
     try:
-        return {info[4][0] for info in socket.getaddrinfo(socket.gethostname(), None)}
+        with socket.socket(family, socket.SOCK_DGRAM) as probe:
+            probe.bind((address, 0))
     except OSError:
-        return set()
+        return False
+    return True
+
+
+def choose_host(addresses: list[str]) -> str | None:
+    """Where to connect to a server advertised at *addresses*.
+
+    A server on this machine listens on loopback, though its responder advertises it on every
+    interface, so any address of this machine means loopback; otherwise the first address.
+    """
+    if not addresses:
+        return None
+    if any(is_local_address(a) for a in addresses):
+        return DEFAULT_HOST
+    return addresses[0]
 
 
 class ServerBrowser:
@@ -61,11 +82,8 @@ class ServerBrowser:
         if state_change not in (ServiceStateChange.Added, ServiceStateChange.Updated):
             return
         info = zeroconf.get_service_info(service_type, name)
-        if info is None or not info.parsed_addresses():
+        host = choose_host(info.parsed_addresses()) if info is not None else None
+        if host is None:
             return
-        host = info.parsed_addresses()[0]
-        # The server binds to loopback, but Bonjour advertises it on every interface.
-        if host in ("::1", "0:0:0:0:0:0:0:1") or host in _local_addresses():
-            host = DEFAULT_HOST
         props = {k.decode(): (v.decode() if v else "") for k, v in info.properties.items()}
         self._on_found(host, info.port, props.get("exe", "unknown"))

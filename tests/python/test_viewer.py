@@ -331,6 +331,18 @@ def test_export_writes_json_and_one_csv_row_per_node(tmp_path):
 # ── client ────────────────────────────────────────────────────────────────────
 
 
+def test_a_server_on_this_machine_is_reached_on_loopback():
+    from waggle.discovery import choose_host, is_local_address
+
+    # 192.0.2.0/24 is reserved for documentation: never a local address.
+    assert is_local_address("127.0.0.1") and not is_local_address("192.0.2.7")
+    # A responder lists every interface's address, a container bridge's among them; one of this
+    # machine's is enough to mean the server here, which listens on loopback.
+    assert choose_host(["192.0.2.7", "127.0.0.1"]) == "127.0.0.1"
+    assert choose_host(["192.0.2.7", "192.0.2.8"]) == "192.0.2.7"
+    assert choose_host([]) is None
+
+
 def test_parse_endpoint():
     assert parse_endpoint("19216") == ("127.0.0.1", 19216)
     assert parse_endpoint("box:1") == ("box", 1)
