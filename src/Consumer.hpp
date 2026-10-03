@@ -178,6 +178,7 @@ struct ThreadState {
         ns        child_time{0};
         TimePoint start;
         uint64_t  counters[kNumCounterSlots]{}; // NOLINT(modernize-avoid-c-arrays)
+        bool      has_counters{false};          ///< whether the push carried readings
 
         /// The node this frame accumulates into, resolved at push. Stays valid because nodes are
         /// never erased.
@@ -426,7 +427,6 @@ class WAGGLE_EXPORT Consumer {
 
     /// The counter backend's slot names, read once, and whether it is active at all.
     bool                                      _counters_checked{false};
-    bool                                      _counters_active{false};
     std::array<std::string, kNumCounterSlots> _counter_names;
     TimePoint                                 _program_start{std::chrono::steady_clock::now()};
 };

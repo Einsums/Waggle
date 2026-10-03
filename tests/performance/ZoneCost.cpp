@@ -222,11 +222,20 @@ TEST_CASE("Bench ZoneCost: one zone, whole and in pieces", "[Profile][ZoneCost][
 #endif
     show("Profiler::instance()  [x2]", per_op([](int) { keep(reinterpret_cast<std::uintptr_t>(&prof::Profiler::instance())); }));
     show("fetch_add on a shared atomic  [was x4]", per_op([](int) { g_shared_counter.fetch_add(1, std::memory_order_relaxed); }));
-    show("counter backend read  [x2 if a backend is active]", per_op([](int) {
-             std::array<std::uint64_t, prof::kNumCounterSlots> values{};
-             prof::get_counter_backend().read(values);
-             keep(values[0]);
-         }));
+    {
+        // What a zone pays twice when the counters source is on: one reading of the thread's counters.
+        prof::ThreadCounters counters;
+        if (prof::get_counter_backend().open(counters)) {
+            show("counter backend read  [x2 with the counters source]", per_op([&](int) {
+                     std::array<std::uint64_t, prof::kNumCounterSlots> values{};
+                     prof::get_counter_backend().read(counters, values);
+                     keep(values[0]);
+                 }));
+            prof::get_counter_backend().close(counters);
+        } else {
+            std::printf("counter backend read: unavailable (%s)\n", prof::get_counter_backend().why_not().c_str());
+        }
+    }
     // The pattern the per-thread ring used to be reached through: a function-local thread_local
     // with dynamic initialization, a shared_ptr returned by reference. It is now a plain pointer.
     show("thread_local lookup, dynamic init  [was x2+]", per_op([](int) { keep(reinterpret_cast<std::uintptr_t>(thread_slot().get())); }));

@@ -33,6 +33,14 @@ WAGGLE_EXPORT auto source_requested(Settings const &settings, std::string_view n
 /// Every source built into this collector, and its state.
 WAGGLE_EXPORT auto source_statuses() -> std::vector<SourceStatus>;
 
+namespace counters {
+/// The hardware counter source: each zone's counter readings (cycles, instructions, ...) from the
+/// platform's backend. A thread counts if the source was asked for when it first recorded.
+WAGGLE_EXPORT auto status() -> SourceStatus;
+/// A thread tried to open its counters: @p opened is whether it could.
+WAGGLE_EXPORT void note_thread(bool opened);
+} // namespace counters
+
 namespace ompt {
 /// The OpenMP source: zones for parallel regions, each thread's share of them, and barrier waits,
 /// from the runtime's OMPT callbacks.

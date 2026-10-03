@@ -169,6 +169,7 @@ Profiler::Profiler() : _consumer(std::make_unique<Consumer>(_strings, _sites)) {
 
 void Profiler::apply(Settings const &s) {
     set_enabled(s.record);
+    _counters_wanted.store(source_requested(s, "counters"), std::memory_order_release);
     _consumer->set_max_distinct_children(s.max_distinct_children);
     if (s.server) {
         start_server(static_cast<uint16_t>(s.port));
@@ -347,11 +348,14 @@ void Profiler::start_server(uint16_t port) {
 auto Profiler::register_thread() -> ThreadChannel & {
     auto       channel = std::make_shared<ThreadChannel>();
     auto const tid     = thread_key();
-    channel->counters  = get_counter_backend().available();
+    // The counters source, if asked for now: this thread's counters are opened here, on it.
+    if (_counters_wanted.load(std::memory_order_acquire)) {
+        channel->counters = get_counter_backend().open(channel->counter_state);
+        counters::note_thread(channel->counters);
+    }
 
     // The consumer drains the ring, and shares the channel's ownership through it.
     _consumer->register_thread(tid, std::shared_ptr<EventRingBuffer>(channel, &channel->ring));
-    get_counter_backend().open_thread_counters();
 
     // Auto-name the thread, the first to register "main", unless the program named it already.
     static std::atomic<bool> first_thread{true};
@@ -390,9 +394,11 @@ auto Profiler::calibrated_overhead() -> Overhead const & {
         // half the ring, so none is dropped.
         constexpr int kZones  = 16384;
         auto          scratch = std::make_unique<ThreadChannel>();
-        scratch->counters     = get_counter_backend().available();
-        auto const elapsed    = [](auto t0, auto t1) { return std::chrono::duration<double, std::nano>(t1 - t0).count(); };
-        auto const t0         = std::chrono::steady_clock::now();
+        // Timed with counters when zones read them. Opened for the scratch channel alone: the
+        // calling thread may hold the consumer's lock (print does), so it must not register here.
+        scratch->counters  = _counters_wanted.load(std::memory_order_acquire) && get_counter_backend().open(scratch->counter_state);
+        auto const elapsed = [](auto t0, auto t1) { return std::chrono::duration<double, std::nano>(t1 - t0).count(); };
+        auto const t0      = std::chrono::steady_clock::now();
         for (int i = 0; i < kZones; ++i) {
             write_push(*scratch, 0, 0);
         }
@@ -403,6 +409,9 @@ auto Profiler::calibrated_overhead() -> Overhead const & {
         auto const t2        = std::chrono::steady_clock::now();
         _calibration.push_ns = elapsed(t0, t1) / kZones;
         _calibration.pop_ns  = elapsed(t1, t2) / kZones;
+        if (scratch->counters) {
+            get_counter_backend().close(scratch->counter_state);
+        }
     });
     return _calibration;
 }

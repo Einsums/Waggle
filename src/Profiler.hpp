@@ -451,8 +451,11 @@ struct WAGGLE_EXPORT Profiler {
         uint64_t pending_ticks{0};
         uint32_t pending_site{0};
         uint32_t pending_name{0};
-        /// Whether a hardware counter backend is active, read once when the thread registers.
+        /// Whether this thread reads hardware counters: the counters source was asked for when it
+        /// registered, and its counters opened.
         bool counters{false};
+        /// Its open counters.
+        ThreadCounters counter_state{};
         /// Whether this thread has woken the consumer since its ring last passed half full.
         bool woke_consumer{false};
         /// Events left before @ref wake_consumer_if_filling looks at the ring again.
@@ -512,6 +515,10 @@ struct WAGGLE_EXPORT Profiler {
     std::unique_ptr<Server> _server;
     std::atomic<Server *>   _server_ptr{nullptr};
 
+    /// Whether the counters source is asked for: read as each thread registers, which takes no
+    /// lock, as a thread may first record inside one (a diagnostic while settings change).
+    std::atomic<bool> _counters_wanted{false};
+
     /// The next device submission's token; 0 is none.
     std::atomic<uint64_t> _next_device_token{1};
 
@@ -565,7 +572,7 @@ struct WAGGLE_EXPORT Profiler {
         if (ch.counters) {
             if (Event *evt = ch.ring.try_claim()) {
                 *evt = Event{.ticks = TickClock::now(), .type = EventType::Push, .site_id = site_id, .name_id = name_id, .depth = depth};
-                read_counters(*evt);
+                read_counters(ch, *evt);
                 ch.ring.commit();
             }
             wake_consumer_if_filling(ch);
@@ -615,7 +622,7 @@ struct WAGGLE_EXPORT Profiler {
         } else if (Event *evt = ch.ring.try_claim()) {
             *evt = Event{.ticks = TickClock::now(), .type = EventType::Pop, .depth = depth};
             if (ch.counters) {
-                read_counters(*evt);
+                read_counters(ch, *evt);
             }
             ch.ring.commit();
         }
@@ -641,12 +648,13 @@ struct WAGGLE_EXPORT Profiler {
         }
     }
 
-    static void read_counters(Event &evt) {
+    static void read_counters(ThreadChannel const &ch, Event &evt) {
         std::array<uint64_t, kNumCounterSlots> values;
-        get_counter_backend().read(values);
+        get_counter_backend().read(ch.counter_state, values);
         for (int i = 0; i < kNumCounterSlots; ++i) {
             evt.counters[i] = values[i];
         }
+        evt.has_counters = true;
     }
 };
 

@@ -176,7 +176,10 @@ def counter_analysis(node: ProfileNode | None) -> str:
     if node is None:
         return "Select a row to see its hardware counters"
     if not node.counters:
-        return "[bold]Hardware counters[/bold]\n  (none recorded; they need Linux perf_event access)"
+        return (
+            "[bold]Hardware counters[/bold]\n  (none recorded: turn on the counters source, WAGGLE_SOURCES=counters; "
+            "the status bar says why when it is on and cannot count)"
+        )
     c = summarize_counters(node.counters)
     if not c.cycles and not c.instructions:
         return "[bold]Hardware counters[/bold]\n  (no cycle or instruction counts)"

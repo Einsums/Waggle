@@ -40,6 +40,13 @@ jobs:
         if: runner.os == 'Linux'
         run: conda install -y -c conda-forge "clang 23.*"
 
+      - name: Let processes count their own threads
+        # Ubuntu sets kernel.perf_event_paranoid to 4, which refuses even software counters; the
+        # counter backend's test opens a group of them, as the runner has no hardware ones.
+        if: runner.os == 'Linux'
+        shell: bash
+        run: sudo sysctl -w kernel.perf_event_paranoid=1
+
       - name: Start an mDNS responder
         # Servers advertise themselves through the Avahi daemon, which the runner does not run.
         if: runner.os == 'Linux'

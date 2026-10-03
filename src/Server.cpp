@@ -130,6 +130,20 @@ std::string sources_json() {
     return out + "]";
 }
 
+/// The counters zones carry, by name: none unless the counters source is active.
+std::string counters_json() {
+    std::string out = "[";
+    if (counters::status().state == "active") {
+        auto const &backend = get_counter_backend();
+        for (int i = 0; i < kNumCounterSlots; ++i) {
+            if (auto const name = backend.slot_name(i); !name.empty()) {
+                out += (out.size() > 1 ? ",\"" : "\"") + escape_json_str(name) + "\"";
+            }
+        }
+    }
+    return out + "]";
+}
+
 std::string methods_json(std::vector<std::string> const &methods) {
     std::string out = "[";
     for (auto const &method : methods) {
@@ -592,14 +606,7 @@ void Server::send_snapshot_to(socket_t fd) {
         msg += ",\"sources\":" + sources_json();
     }
 
-    auto &cb = get_counter_backend();
-    msg += ",\"counters\":[";
-    for (int i = 0; i < kNumCounterSlots; ++i) {
-        if (i > 0)
-            msg += ",";
-        msg += "\"" + escape_json_str(cb.slot_name(i)) + "\"";
-    }
-    msg += "]}\n";
+    msg += ",\"counters\":" + counters_json() + "}\n";
 
     // Snapshot line
     msg += R"({"type":"snapshot","seq":)" + std::to_string(++_seq);
@@ -1007,14 +1014,7 @@ void Server::export_session(std::string const &path, std::string const &label,
     json += R"(    "start_time": ")" + escape_json_str(s_start_time) + "\",\n";
     json += R"(    "executable_path": ")" + escape_json_str(s_executable_path) + "\",\n";
     json += "    \"clients\": " + clients_json(_handlers.clients()) + ",\n";
-    json += "    \"counters\": [";
-    auto &cb = get_counter_backend();
-    for (int i = 0; i < kNumCounterSlots; ++i) {
-        if (i > 0)
-            json += ", ";
-        json += "\"" + escape_json_str(cb.slot_name(i)) + "\"";
-    }
-    json += "]\n";
+    json += "    \"counters\": " + counters_json() + "\n";
     json += "  },\n";
 
     // Snapshot fields

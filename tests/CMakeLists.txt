@@ -38,6 +38,15 @@ foreach(_name IN LISTS _waggle_unit_tests)
   set_tests_properties(${WAGGLE_TEST_PREFIX}${_name} PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false" TIMEOUT 300)
 endforeach()
 
+# Hardware counters: the backends directly, then the source with it asked for in the environment.
+add_executable(waggle_Counters_test unit/Counters.cpp)
+target_link_libraries(waggle_Counters_test PRIVATE Waggle::internal Catch2::Catch2WithMain)
+add_dependencies(waggle_tests waggle_Counters_test)
+add_test(NAME ${WAGGLE_TEST_PREFIX}Counters COMMAND waggle_Counters_test "[backend]")
+set_tests_properties(${WAGGLE_TEST_PREFIX}Counters PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false" TIMEOUT 300)
+add_test(NAME ${WAGGLE_TEST_PREFIX}CountersSource COMMAND waggle_Counters_test "[source]")
+set_tests_properties(${WAGGLE_TEST_PREFIX}CountersSource PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false;WAGGLE_SOURCES=counters" TIMEOUT 300)
+
 # The OpenMP source against a runtime with OMPT: LLVM's libomp, which also serves GCC-compiled code
 # through its GOMP entry points. So the test compiles with the compiler's OpenMP flag but links
 # libomp itself, never GCC's libgomp, which has no OMPT. MSVC's runtime has none either.

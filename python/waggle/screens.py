@@ -179,9 +179,9 @@ COLUMN_HELP = """\
 
 PANEL_HELP = """\
 [bold underline]Panels[/]
-  [bold]Hardware counters[/] derive IPC and cache/branch misses per 1000 instructions from
-  Linux perf_event counters, and classify the zone (retiring, compute bound, front-end bound,
-  back-end bound, bad speculation).
+  [bold]Hardware counters[/] derive IPC and cache/branch misses per 1000 instructions from the
+  counters source (Linux perf; cycles and instructions on macOS), and classify the zone
+  (retiring, compute bound, front-end bound, back-end bound, bad speculation).
   [bold]Disassembly[/] runs llvm-objdump (or objdump) on the executable and the shared libraries
   beside it and in ../lib, so it needs the binaries on this machine.
   [bold]Roofline[/] plots zones annotated with flops and bytes_read/bytes_written.

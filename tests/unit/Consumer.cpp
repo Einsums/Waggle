@@ -330,12 +330,10 @@ TEST_CASE("Profiler - the timeline keeps the latest zones, oldest first", "[prof
     }
 }
 
-TEST_CASE("Profiler - no counter rows without a counter backend", "[profiler][consumer]") {
+TEST_CASE("Profiler - no counter rows without the counters source", "[profiler][consumer]") {
     // Every closed zone merged four hardware counters into string-keyed maps, all zero when no
-    // backend is active, and every node of the report carried four rows of zeros.
-    if (get_counter_backend().available()) {
-        SKIP("a hardware counter backend is active on this machine");
-    }
+    // backend is active, and every node of the report carried four rows of zeros. On Linux every
+    // zone also read them, four system calls as it opened and four as it closed, unasked.
     auto &prof = Profiler::instance();
     {
         WAGGLE_ZONE("counterless zone");

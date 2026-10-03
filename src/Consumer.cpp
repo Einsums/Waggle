@@ -421,6 +421,7 @@ void Consumer::process_push(ThreadState &ts, Event const &evt) {
     frame.start      = TickClock::instance().to_time_point(std::max(evt.ticks, _reset_ticks));
     for (int i = 0; i < kNumCounterSlots; ++i)
         frame.counters[i] = evt.counters[i];
+    frame.has_counters = evt.has_counters;
 
     // One step down from the parent's node, resolved when the parent was pushed.
     AggNode *parent = ts.stack.empty() ? &ts.root : ts.stack.back().node;
@@ -533,16 +534,19 @@ void Consumer::process_pop(ThreadState &ts, Event const &evt, uint32_t thread_id
 
     cur->record_exclusive(exclusive);
 
-    // Merge counter deltas only when a counter backend is active; otherwise they are all zero.
-    if (!_counters_checked) {
-        auto &backend    = get_counter_backend();
-        _counters_active = backend.available();
+    // Counter deltas only between readings taken: a thread that does not count writes none.
+    bool const counted = frame.has_counters && evt.has_counters;
+    if (counted && !_counters_checked) {
+        auto &backend = get_counter_backend();
         for (int i = 0; i < kNumCounterSlots; ++i) {
             _counter_names[i] = backend.slot_name(i);
         }
         _counters_checked = true;
     }
-    for (int i = 0; _counters_active && i < kNumCounterSlots; ++i) {
+    for (int i = 0; counted && i < kNumCounterSlots; ++i) {
+        if (_counter_names[i].empty()) {
+            continue; // a slot the backend leaves unused
+        }
         uint64_t const     counter_delta = evt.counters[i] - frame.counters[i];
         std::string const &cname         = _counter_names[i];
         cur->counters_total[cname] += counter_delta;

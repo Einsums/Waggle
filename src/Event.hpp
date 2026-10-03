@@ -63,6 +63,9 @@ struct alignas(64) Event {
     /// Raw @ref TickClock ticks; the consumer converts them with TickClock::to_time_point.
     uint64_t  ticks;
     EventType type;
+    /// For Push and Pop: whether @c counters holds the thread's counter readings. In the padding
+    /// after @c type, so it costs no room.
+    bool has_counters{false};
 
     /// For Push: the zone's call site (see SiteTable), which supplies its file, line, function
     /// and domain.
