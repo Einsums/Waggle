@@ -2,7 +2,6 @@ name: CI
 
 on:
   push:
-    branches: [main]
   pull_request:
 
 concurrency:
@@ -20,6 +19,30 @@ jobs:
     defaults:
       run:
         shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          environment-file: environment.yml
+          activate-environment: waggle-dev
+          miniforge-version: latest
+
+      - name: Configure
+        run: cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DWAGGLE_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build --target all waggle_tests
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure -j4
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        # conda-forge's compilers set up MSVC through a batch activation script.
+        shell: cmd /C CALL {0}
     steps:
       - uses: actions/checkout@v4
 
