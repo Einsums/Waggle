@@ -74,8 +74,13 @@ target_link_libraries(waggle_internal INTERFACE waggle)
 add_library(Waggle::internal ALIAS waggle_internal)
 
 # ── Python ─────────────────────────────────────────────────────────────────
-# The viewer and the report tools, pure Python. A project that builds Waggle beside its own Python
-# package stages Waggle's next to it, so both import from the build tree, and installs it there too.
+# The viewer and the report tools are pure Python. waggle._core, the profiler for Python code, is a
+# compiled module apiary generates from python/src/Core.hpp; it calls only the C interface.
+option(WAGGLE_BUILD_PYTHON "Build waggle._core, the profiler for Python code (needs apiary and pybind11)" OFF)
+
+# A project that builds Waggle beside its own Python package stages Waggle's next to it, so both
+# import from the build tree, and installs it there too. Building waggle._core needs a staged
+# package to put it in, so it stages one in this build tree unless told where.
 set(WAGGLE_PYTHON_STAGING_DIR
     ""
     CACHE PATH "Directory to copy the waggle Python package into at configure time; empty for none"
@@ -84,15 +89,19 @@ set(WAGGLE_PYTHON_INSTALL_DIR
     ""
     CACHE PATH "Install destination of the waggle Python package, relative to the prefix; empty for none"
 )
+set(_waggle_python_dir "${WAGGLE_PYTHON_STAGING_DIR}")
+if(WAGGLE_BUILD_PYTHON AND NOT _waggle_python_dir)
+  set(_waggle_python_dir "${CMAKE_CURRENT_BINARY_DIR}/python")
+endif()
 file(
   GLOB_RECURSE _waggle_python_files CONFIGURE_DEPENDS
   RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}/python
   ${CMAKE_CURRENT_SOURCE_DIR}/python/waggle/*.py ${CMAKE_CURRENT_SOURCE_DIR}/python/waggle/*.tcss
 )
-if(WAGGLE_PYTHON_STAGING_DIR)
+if(_waggle_python_dir)
   # configure_file follows the source's timestamp, so an edit lands at the next build.
   foreach(_file IN LISTS _waggle_python_files)
-    configure_file(python/${_file} ${WAGGLE_PYTHON_STAGING_DIR}/${_file} COPYONLY)
+    configure_file(python/${_file} ${_waggle_python_dir}/${_file} COPYONLY)
   endforeach()
 endif()
 if(WAGGLE_PYTHON_INSTALL_DIR)
@@ -104,6 +113,84 @@ if(WAGGLE_PYTHON_INSTALL_DIR)
     PATTERN "*.tcss"
     PATTERN "__pycache__" EXCLUDE
   )
+endif()
+
+if(WAGGLE_BUILD_PYTHON)
+  if(NOT COMMAND apiary_add_bindings)
+    find_package(Apiary 1.1...<2 CONFIG REQUIRED)
+  endif()
+  if(NOT COMMAND pybind11_add_module)
+    find_package(Python COMPONENTS Interpreter Development.Module REQUIRED)
+    find_package(pybind11 CONFIG REQUIRED)
+  endif()
+  apiary_detect_toolchain(CXX_STANDARD 20)
+
+  # What apiary parses Core.hpp with: Waggle's public headers and the annotation macros.
+  add_library(waggle_python_api INTERFACE)
+  target_include_directories(waggle_python_api INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/python/src)
+  target_link_libraries(waggle_python_api INTERFACE waggle apiary::annotations)
+
+  set(_waggle_gen "${CMAKE_CURRENT_BINARY_DIR}/python-gen")
+  apiary_add_bindings(
+    BINDING
+    HEADERS "${CMAKE_CURRENT_SOURCE_DIR}/python/src/Core.hpp"
+    SOURCE_INCLUDES Core.hpp
+    REGISTER_FUNCTION waggle_register_core
+    DEPENDS_TARGETS waggle_python_api
+    OUTPUT_DIR "${_waggle_gen}"
+    OUTPUT_NAME waggle_core
+    CXX_STANDARD 20
+    OUT_BINDING _waggle_binding
+    OUT_STUB _waggle_stub
+  )
+  apiary_aggregate_extension(
+    NAME waggle_core
+    MAIN "${CMAKE_CURRENT_SOURCE_DIR}/python/src/module.cpp"
+    BINDINGS ${_waggle_binding}
+    MODULES core
+    REGISTER_PREFIX waggle_register_
+    MODULES_HEADER "${_waggle_gen}/include/waggle/Modules.hpp"
+    MODULES_INCLUDE_DIR "${_waggle_gen}/include"
+  )
+  target_link_libraries(waggle_core PRIVATE waggle_python_api)
+
+  # waggle/_core beside the staged package's Python files, under every configuration's name.
+  set_target_properties(waggle_core PROPERTIES OUTPUT_NAME _core LIBRARY_OUTPUT_DIRECTORY "${_waggle_python_dir}/waggle")
+  foreach(_config IN LISTS CMAKE_CONFIGURATION_TYPES)
+    string(TOUPPER "${_config}" _config)
+    set_target_properties(waggle_core PROPERTIES LIBRARY_OUTPUT_DIRECTORY_${_config} "${_waggle_python_dir}/waggle")
+  endforeach()
+  if(WIN32)
+    # Python does not search PATH for an extension's DLLs: waggle.dll goes beside _core.pyd. A
+    # process loads one waggle.dll by name, so a second file of the same name is never a second
+    # collector.
+    add_custom_command(
+      TARGET waggle_core
+      POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:waggle> "${_waggle_python_dir}/waggle"
+    )
+  endif()
+
+  if(WAGGLE_PYTHON_INSTALL_DIR)
+    install(TARGETS waggle_core LIBRARY DESTINATION ${WAGGLE_PYTHON_INSTALL_DIR}/waggle RUNTIME DESTINATION
+                                                                                           ${WAGGLE_PYTHON_INSTALL_DIR}/waggle
+    )
+    file(RELATIVE_PATH _waggle_core_to_lib "${CMAKE_INSTALL_PREFIX}/${WAGGLE_PYTHON_INSTALL_DIR}/waggle"
+         "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}"
+    )
+    if(APPLE)
+      set_property(TARGET waggle_core APPEND PROPERTY INSTALL_RPATH "@loader_path/${_waggle_core_to_lib}")
+    elseif(WIN32)
+      install(FILES $<TARGET_FILE:waggle> DESTINATION ${WAGGLE_PYTHON_INSTALL_DIR}/waggle)
+    else()
+      set_property(TARGET waggle_core APPEND PROPERTY INSTALL_RPATH "\$ORIGIN/${_waggle_core_to_lib}")
+    endif()
+    install(
+      FILES ${_waggle_stub}
+      DESTINATION ${WAGGLE_PYTHON_INSTALL_DIR}/waggle
+      RENAME _core.pyi
+    )
+  endif()
 endif()
 
 # ── Tests ──────────────────────────────────────────────────────────────────

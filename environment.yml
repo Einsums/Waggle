@@ -8,6 +8,9 @@ dependencies:
   - fmt>=12,<13
   - catch2>=3
   - python>=3.10
+  - pybind11
+  # apiary generates waggle._core from python/src/Core.hpp
+  - apiary >=1.1,<2
   - pytest
   - textual
   - pre-commit

@@ -60,7 +60,28 @@ void mylib_init(void) {
 
 Close a zone only when `waggle_zone_begin` returned 1: recording may be switched on or off while a zone is open.
 Any language that can call C functions can use the same interface.
-Python instrumentation, as a compiled module over it, is still to come.
+
+### From Python
+
+```python
+import waggle
+
+SOLVE = waggle.Zone("solve")      # the site is registered once
+
+def solve(n):
+    with SOLVE:
+        waggle.annotate("n", n)
+        ...
+
+@waggle.profile
+def build_fock(density):
+    ...
+
+print(waggle.snapshot().find("solve").call_count)
+```
+
+`waggle._core`, a compiled module over the C interface, does the recording; build it with `-DWAGGLE_BUILD_PYTHON=ON`, which needs [apiary](https://github.com/Einsums/Apiary) and pybind11.
+Python zones belong to the domain `python` unless given another.
 
 ## One collector per process
 
