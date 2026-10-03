@@ -13,10 +13,12 @@
 
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
+#include <chrono>
 #include <omp.h>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include "OmptTypes.hpp"
@@ -169,4 +171,26 @@ TEST_CASE("A source requested after the runtime started says so", "[ompt][missed
     auto const status = waggle::ompt::status();
     CHECK(status.state == "missed");
     CHECK(status.detail.find("WAGGLE_SOURCES=openmp") != std::string::npos);
+}
+
+// libomp reports a worker's implicit task end only when the worker wakes for the next region, so a
+// share closed there took in the idle time between the two regions.
+TEST_CASE("A thread's share of a region ends with the region, not when the next one starts", "[ompt][active]") {
+    {
+        waggle::ScopedZone const outer("ompt: two regions");
+        ompt_test_region();
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        ompt_test_region();
+    }
+    auto const snapshot = waggle::Snapshot::take();
+    int        shares   = 0;
+    for (auto const &thread : snapshot.threads()) {
+        if (auto const share = child(thread.root, std::string("omp work: ") + kRegionFunction)) {
+            auto const stats = share->stats();
+            INFO(thread.name << ": " << stats.call_count << " shares, " << stats.inclusive_ns / 1e6 << " ms");
+            CHECK(stats.inclusive_ns < 50'000'000); // far below the 100 ms between the regions
+            ++shares;
+        }
+    }
+    CHECK(shares == kThreads - 1);
 }

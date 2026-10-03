@@ -131,6 +131,16 @@ class DomainTable {
         }
     }
 
+    /// Turn every switch off for good: the collector is being destroyed, and a site that cached a
+    /// switch must read "off" rather than call into it.
+    void shut_off() {
+        std::scoped_lock const lock(_mutex);
+        _global = false;
+        for (auto &slot : _switches) {
+            store(slot, false);
+        }
+    }
+
     /// Whether domain @p id is switched on, its own switch alone, whatever the global one says.
     [[nodiscard]] auto enabled(uint32_t id) const -> bool {
         std::scoped_lock const lock(_mutex);
@@ -151,8 +161,10 @@ class DomainTable {
     /// Whether each domain is wanted on, its own setting, beside its name.
     std::deque<bool> _wanted;
     /// Each domain's switch as sites read it: wanted and the global switch on. A deque, so each
-    /// stays where it is as it grows; mutable, as std::atomic_ref takes no const object.
-    mutable std::deque<std::int32_t>          _switches;
+    /// stays where it is as it grows; mutable, as std::atomic_ref takes no const object. Never
+    /// freed: sites keep pointers into it, and code running after the collector is destroyed at
+    /// exit (other libraries' destructors, a runtime's teardown callbacks) still reads them.
+    std::deque<std::int32_t>                 &_switches = *new std::deque<std::int32_t>; // NOLINT(cppcoreguidelines-owning-memory)
     bool                                      _global{true};
     std::unordered_map<std::string, uint32_t> _ids;
 };

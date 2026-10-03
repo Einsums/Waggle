@@ -58,9 +58,9 @@ using waggle::Profiler;
 /// copy of the collector that switched itself off, which never builds one.
 std::atomic<Profiler *> g_active{nullptr};
 
-/// The first call: build the profiler, unless this copy is off.
+/// The first call: build the profiler, unless this copy is off or it was destroyed at exit.
 [[gnu::noinline]] auto activate() -> Profiler * {
-    if (waggle::collector_inactive()) {
+    if (waggle::collector_inactive() || Profiler::gone()) {
         return nullptr;
     }
     Profiler *const p = &Profiler::instance();
@@ -73,6 +73,12 @@ WAGGLE_FORCEINLINE auto active() -> Profiler * {
         return p;
     }
     return activate();
+}
+
+/// Whether the C interface must do nothing: this copy switched itself off, or its profiler was
+/// destroyed at exit and only the code running after it is left.
+auto unusable() -> bool {
+    return waggle::collector_inactive() || Profiler::gone();
 }
 
 auto profiler() -> Profiler & {
@@ -131,6 +137,12 @@ auto set_settings(char const *const *keys, char const *const *values, size_t cou
 
 } // namespace
 
+WAGGLE_NAMESPACE_BEGIN
+void detach_abi() noexcept {
+    g_active.store(nullptr, std::memory_order_release);
+}
+WAGGLE_NAMESPACE_END
+
 extern "C" {
 
 void waggle_abi_version(uint32_t *major, uint32_t *minor) {
@@ -143,49 +155,49 @@ void waggle_abi_version(uint32_t *major, uint32_t *minor) {
 }
 
 uint32_t waggle_intern(char const *s, size_t length) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return 0;
     }
     return profiler().string_table().intern(std::string_view(s, length));
 }
 
 uint32_t waggle_register_domain(char const *name, size_t length) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return 0;
     }
     return profiler().register_domain(std::string_view(name, length));
 }
 
 uint32_t waggle_register_site(char const *name, size_t name_length, char const *file, int line, char const *func, uint32_t domain) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return 0;
     }
     return profiler().register_site(std::string_view(name, name_length), view(file), line, view(func), domain);
 }
 
 int waggle_enabled(void) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return 0;
     }
     return profiler().enabled() ? 1 : 0;
 }
 
 void waggle_set_enabled(int on) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return;
     }
     profiler().set_enabled(on != 0);
 }
 
 int32_t const *waggle_domain_flag(uint32_t domain) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return &kOff;
     }
     return profiler().domain_table().switch_of(domain);
 }
 
 void waggle_domain_set_enabled(char const *name, size_t length, int on) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return;
     }
     auto &p = profiler();
@@ -193,14 +205,14 @@ void waggle_domain_set_enabled(char const *name, size_t length, int on) {
 }
 
 int waggle_domain_enabled(uint32_t domain) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return 0;
     }
     return profiler().domain_table().enabled(domain) ? 1 : 0;
 }
 
 int32_t const *waggle_enabled_flag(void) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return &kOff;
     }
     return profiler().enabled_flag();
@@ -248,35 +260,35 @@ void waggle_mem_free(void const *address, int64_t bytes) {
 }
 
 void waggle_set_thread_name(char const *name, size_t length) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return;
     }
     profiler().set_thread_name(std::string(name, length));
 }
 
 uint32_t waggle_current_thread_id(void) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return 0;
     }
     return Profiler::current_thread_id();
 }
 
 int waggle_config_set(char const *const *keys, char const *const *values, size_t count) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return 0;
     }
     return set_settings(keys, values, count, false);
 }
 
 int waggle_config_override(char const *const *keys, char const *const *values, size_t count) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return 0;
     }
     return set_settings(keys, values, count, true);
 }
 
 int64_t waggle_config_get(char const *key, char *buffer, size_t size) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return -1;
     }
     auto const value = profiler().setting_text(view(key));
@@ -291,7 +303,7 @@ int64_t waggle_config_get(char const *key, char *buffer, size_t size) {
 
 void waggle_init(char const *name, char const *version, char const *git_commit, char const *git_branch, int git_dirty,
                  char const *build_type) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return;
     }
     profiler().init({.name       = std::string(view(name)),
@@ -303,14 +315,14 @@ void waggle_init(char const *name, char const *version, char const *git_commit, 
 }
 
 void waggle_finalize(char const *name) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return;
     }
     profiler().finalize(std::string(view(name)));
 }
 
 void waggle_at_exit(void) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return;
     }
     // Not active(): exiting is no reason to build a profiler nothing used.
@@ -320,28 +332,28 @@ void waggle_at_exit(void) {
 }
 
 void waggle_flush(void) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return;
     }
     profiler().flush();
 }
 
 void waggle_wait_for_viewer(void) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return;
     }
     profiler().wait_for_viewer();
 }
 
 void waggle_server_start(uint16_t port) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return;
     }
     profiler().start_server(port);
 }
 
 int waggle_server_running(void) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return 0;
     }
     auto *srv = profiler().server();
@@ -349,7 +361,7 @@ int waggle_server_running(void) {
 }
 
 uint16_t waggle_server_port(void) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return 0;
     }
     auto *srv = profiler().server();
@@ -357,7 +369,7 @@ uint16_t waggle_server_port(void) {
 }
 
 int waggle_viewer_connected(void) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return 0;
     }
     auto *srv = profiler().server();
@@ -371,7 +383,7 @@ void waggle_reply_set(waggle_reply *reply, char const *data, size_t length) {
 }
 
 void waggle_register_handler(char const *method, waggle_handler_fn handler, void *user, waggle_release_fn release) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         if (release != nullptr) {
             release(user);
         }
@@ -381,14 +393,14 @@ void waggle_register_handler(char const *method, waggle_handler_fn handler, void
 }
 
 void waggle_unregister_handler(char const *method) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return;
     }
     profiler().unregister_handler(std::string(view(method)));
 }
 
 void waggle_register_session_section(char const *key, waggle_handler_fn section, void *user, waggle_release_fn release) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         if (release != nullptr) {
             release(user);
         }
@@ -399,14 +411,14 @@ void waggle_register_session_section(char const *key, waggle_handler_fn section,
 }
 
 void waggle_publish(char const *type, char const *json, size_t length) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return;
     }
     profiler().publish(view(type), std::string_view(json, length));
 }
 
 void waggle_log(int level, int64_t unix_ns, char const *file, int line, char const *func, char const *message, size_t length) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return;
     }
     auto const when = std::chrono::system_clock::time_point(
@@ -415,14 +427,14 @@ void waggle_log(int level, int64_t unix_ns, char const *file, int line, char con
 }
 
 void waggle_output(char const *message, size_t length) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return;
     }
     profiler().output(std::string_view(message, length));
 }
 
 void waggle_set_diagnostic_handler(waggle_diagnostic_fn handler, void *user, waggle_release_fn release) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         if (release != nullptr) {
             release(user);
         }
@@ -438,7 +450,7 @@ void waggle_set_diagnostic_handler(waggle_diagnostic_fn handler, void *user, wag
 }
 
 void waggle_print_report(int detailed) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return;
     }
     profiler().print(detailed != 0, std::cout);
@@ -446,42 +458,42 @@ void waggle_print_report(int detailed) {
 }
 
 int waggle_export_json(char const *path) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return -1;
     }
     return profiler().export_json(std::string(view(path))) ? 0 : 1;
 }
 
 uint64_t waggle_total_push_count(void) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return 0;
     }
     return profiler().total_push_count();
 }
 
 uint64_t waggle_total_pop_count(void) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return 0;
     }
     return profiler().total_pop_count();
 }
 
 double waggle_push_overhead_ns(void) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return 0.0;
     }
     return profiler().avg_push_overhead_ns();
 }
 
 double waggle_pop_overhead_ns(void) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return 0.0;
     }
     return profiler().avg_pop_overhead_ns();
 }
 
 void waggle_open_zone_annotations(waggle_pair_fn fn, void *user) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return;
     }
     auto &prof = profiler();
@@ -494,7 +506,7 @@ void waggle_open_zone_annotations(waggle_pair_fn fn, void *user) {
 }
 
 waggle_snapshot *waggle_snapshot_take(uint32_t flags) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return nullptr;
     }
     auto &prof = profiler();
@@ -581,7 +593,7 @@ void waggle_node_numeric_annotations(waggle_node const *node, waggle_numeric_fn 
 }
 
 void waggle_reset(void) {
-    if (waggle::collector_inactive()) {
+    if (unusable()) {
         return;
     }
     profiler().reset();

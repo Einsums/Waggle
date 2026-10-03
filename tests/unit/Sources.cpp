@@ -15,6 +15,7 @@
 #include <string>
 
 #include "Profiler.hpp"
+#include "Symbols.hpp"
 
 TEST_CASE("The sources setting names sources in a comma list", "[sources]") {
     waggle::Settings s;
@@ -54,4 +55,26 @@ TEST_CASE("Every built-in source reports a state", "[sources]") {
     std::ostringstream report;
     waggle::Profiler::instance().print(false, report);
     CHECK(report.str().find("Not recorded: source openmp is waiting") != std::string::npos);
+}
+
+namespace {
+// Internal linkage: exported by nothing, so dladdr on Linux cannot name it; the module's own
+// symbol table can.
+[[gnu::noinline]] int waggle_symbol_probe(int x) {
+    return x * 3 + 1;
+}
+} // namespace
+
+// On Linux regions were named by bare addresses: dladdr knows only exported symbols, and a library
+// built with hidden visibility exports few.
+TEST_CASE("A code address is named after the function it is in, exported or not", "[sources]") {
+    auto const       *address = reinterpret_cast<char const *>(&waggle_symbol_probe) + 4; // inside, not at its start
+    std::string const name    = waggle::function_at(address);
+    INFO(name);
+#ifdef _WIN32
+    CHECK(name.find(".exe+0x") != std::string::npos); // the module and the offset
+#else
+    CHECK(name == "(anonymous namespace)::waggle_symbol_probe");
+#endif
+    CHECK(waggle_symbol_probe(1) == 4); // keeps it
 }

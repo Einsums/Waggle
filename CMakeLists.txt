@@ -40,6 +40,7 @@ add_library(
   src/Settings.cpp
   src/Snapshot.cpp
   src/Sources.cpp
+  src/Symbols.cpp
   src/Waggle.cpp
 )
 add_library(Waggle::waggle ALIAS waggle)

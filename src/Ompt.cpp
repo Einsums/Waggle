@@ -26,21 +26,10 @@
 #include <vector>
 
 #include "Duplicates.hpp"
+#include "OmptTypes.hpp"
 #include "Profiler.hpp"
 #include "Sources.hpp"
-
-#ifdef _WIN32
-#    ifndef NOMINMAX
-#        define NOMINMAX
-#    endif
-#    include <windows.h>
-#else
-#    include <cstdlib>
-#    include <cxxabi.h>
-#    include <dlfcn.h>
-#endif
-
-#include "OmptTypes.hpp"
+#include "Symbols.hpp"
 
 namespace {
 
@@ -72,26 +61,56 @@ std::mutex                                       g_regions_mutex;
 std::deque<Region>                               g_regions;   // stable addresses, under g_regions_mutex
 std::unordered_map<void const *, Region const *> g_region_of; // by call site, under g_regions_mutex
 
-/// Whether each zone this thread's callbacks began opened: OMPT pairs every begin with an end on
-/// the same thread, innermost first, so a stack keeps them matched even when recording switches
-/// in between.
-thread_local std::vector<bool> t_opened;
+/// This thread's open OpenMP zones. Trivially destructible on purpose: the runtime calls back while
+/// a thread, or the process, is being torn down, after a thread_local with a destructor is gone.
+struct Frames {
+    static constexpr uint32_t kMax = 64;
+    /// Bit k: whether the zone at depth k opened. OMPT pairs every begin with an end on the same
+    /// thread, innermost first, so this keeps them matched even when recording switches between.
+    uint64_t opened = 0;
+    uint32_t depth  = 0;
+    /// The thread's shares of regions (implicit tasks), innermost last: the depth each sits at,
+    /// whether the thread is the region's primary, and whether the share was closed early.
+    uint32_t work_depth[8]   = {}; // NOLINT(modernize-avoid-c-arrays)
+    bool     work_primary[8] = {}; // NOLINT(modernize-avoid-c-arrays)
+    bool     work_closed[8]  = {}; // NOLINT(modernize-avoid-c-arrays)
+    uint32_t works           = 0;
+};
+thread_local Frames t_frames;
 
 auto recording() -> bool {
-    return std::atomic_ref<std::int32_t>(*const_cast<std::int32_t *>(g_switch)).load(std::memory_order_relaxed) != 0; // NOLINT
+    // After the collector is destroyed at exit, its switches are gone with it.
+    return !waggle::Profiler::gone() &&
+           std::atomic_ref<std::int32_t>(*const_cast<std::int32_t *>(g_switch)).load(std::memory_order_relaxed) != 0; // NOLINT
+}
+
+/// A frame that opened no zone, to keep its end paired.
+void skip() {
+    Frames &f = t_frames;
+    if (f.depth < Frames::kMax) {
+        f.opened &= ~(uint64_t{1} << f.depth);
+    }
+    ++f.depth;
 }
 
 void begin(uint32_t site) {
-    t_opened.push_back(recording() && waggle_zone_begin(site, 0) != 0);
+    Frames &f = t_frames;
+    if (f.depth >= Frames::kMax) {
+        skip(); // too deep to track: never opened, so its end closes nothing
+        return;
+    }
+    bool const opened = recording() && waggle_zone_begin(site, 0) != 0;
+    f.opened          = opened ? f.opened | (uint64_t{1} << f.depth) : f.opened & ~(uint64_t{1} << f.depth);
+    ++f.depth;
 }
 
 void end() {
-    if (t_opened.empty()) {
+    Frames &f = t_frames;
+    if (f.depth == 0) {
         return; // an end whose begin came before the tool attached
     }
-    bool const opened = t_opened.back();
-    t_opened.pop_back();
-    if (opened) {
+    --f.depth;
+    if (f.depth < Frames::kMax && (f.opened & (uint64_t{1} << f.depth)) != 0) {
         waggle_zone_end();
     }
 }
@@ -142,38 +161,6 @@ WAGGLE_NAMESPACE_END
 
 namespace {
 
-/// The function a code address is in, without its arguments: "einsums::pack<double>".
-///
-/// A region is reported by the return address of the call into the runtime, so it is named after
-/// the function holding that call. A region that shares nothing with its function, last in it,
-/// may be compiled as a jump to the runtime rather than a call; it is then named after the
-/// function's caller.
-auto function_at(void const *address) -> std::string {
-#ifdef _WIN32
-    HMODULE module = nullptr;
-    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                           static_cast<LPCSTR>(address), &module) != 0) {
-        char path[MAX_PATH]; // NOLINT(modernize-avoid-c-arrays)
-        if (GetModuleFileNameA(module, path, MAX_PATH) > 0) {
-            std::string_view file = path;
-            file                  = file.substr(file.find_last_of("\\/") + 1);
-            return fmt::format("{}+{:#x}", file, static_cast<char const *>(address) - reinterpret_cast<char const *>(module));
-        }
-    }
-    return fmt::format("{}", address);
-#else
-    Dl_info info{};
-    if (dladdr(address, &info) == 0 || info.dli_sname == nullptr) {
-        return fmt::format("{}", address);
-    }
-    int               status    = 0;
-    char             *demangled = abi::__cxa_demangle(info.dli_sname, nullptr, nullptr, &status);
-    std::string const name      = status == 0 && demangled != nullptr ? demangled : info.dli_sname;
-    std::free(demangled); // NOLINT(cppcoreguidelines-no-malloc)
-    return waggle::short_function_name(name);
-#endif
-}
-
 auto region_at(void const *codeptr) -> Region const * {
     // A thread's own cache first: the shared map's lock is taken once per call site per thread.
     thread_local std::unordered_map<void const *, Region const *> cache;
@@ -183,7 +170,7 @@ auto region_at(void const *codeptr) -> Region const * {
     std::scoped_lock const lock(g_regions_mutex);
     auto [it, added] = g_region_of.try_emplace(codeptr, nullptr);
     if (added) {
-        std::string const function = function_at(codeptr);
+        std::string const function = waggle::function_at(codeptr);
         it->second = &g_regions.emplace_back(Region{site("omp parallel: " + function, function), site("omp work: " + function, function)});
     }
     cache.emplace(codeptr, it->second);
@@ -210,21 +197,39 @@ void on_parallel_end(ompt_data_t * /*parallel_data*/, ompt_data_t * /*encounteri
 }
 
 void on_implicit_task(ompt_scope_endpoint_t endpoint, ompt_data_t *parallel_data, ompt_data_t * /*task_data*/, unsigned /*team*/,
-                      unsigned /*index*/, int                      flags) {
+                      unsigned index, int flags) {
     // The initial task spans the whole program: as a zone it would wrap every other.
     if ((flags & ompt_task_initial) != 0) {
         return;
     }
+    Frames &f = t_frames;
     if (endpoint == ompt_scope_begin) {
         auto const *region = parallel_data != nullptr ? static_cast<Region const *>(parallel_data->ptr) : nullptr;
-        if (region == nullptr) {
-            t_opened.push_back(false); // keeps the end paired
-            return;
+        if (f.works < std::size(f.work_depth)) {
+            f.work_depth[f.works]   = f.depth;
+            f.work_primary[f.works] = index == 0;
+            f.work_closed[f.works]  = false;
         }
-        begin(region->work_site);
-    } else if (endpoint == ompt_scope_end) {
-        end(); // a worker's parallel_data may already be gone here
+        ++f.works;
+        if (region != nullptr) {
+            begin(region->work_site);
+        } else {
+            skip();
+        }
+    } else if (endpoint == ompt_scope_end && f.works > 0) {
+        // libomp reports a worker's end only when the worker wakes for the next region, or for
+        // shutdown; by then its share was closed where it reached the region's closing barrier.
+        --f.works;
+        if (f.works >= std::size(f.work_closed) || !f.work_closed[f.works]) {
+            end();
+        }
     }
+}
+
+/// Whether @p kind is the barrier that closes a parallel region, after which a thread's share of
+/// the region is done.
+auto closes_region(ompt_sync_region_t kind) -> bool {
+    return kind == ompt_sync_region_barrier_implicit_parallel || kind == ompt_sync_region_barrier_implicit;
 }
 
 void on_sync_region_wait(ompt_sync_region_t kind, ompt_scope_endpoint_t endpoint, ompt_data_t * /*parallel_data*/,
@@ -232,6 +237,20 @@ void on_sync_region_wait(ompt_sync_region_t kind, ompt_scope_endpoint_t endpoint
     auto const index = static_cast<size_t>(kind);
     if (index >= std::size(g_barrier_sites) || g_barrier_sites[index] == 0) {
         return; // taskwait, taskgroup, reduction: not barriers
+    }
+    Frames    &f = t_frames;
+    bool const top_work =
+        f.works > 0 && f.works <= std::size(f.work_depth) && !f.work_closed[f.works - 1] && f.work_depth[f.works - 1] + 1 == f.depth;
+    // A worker waits at its region's closing barrier until the next region starts: libomp reports
+    // the wait's end, and the share's, only then. So a worker's share ends where it reaches the
+    // barrier, and the wait is not recorded: its end would count the idle time between regions.
+    // The primary thread's wait there ends with the region, and is the time the slowest worker
+    // kept it waiting.
+    if (closes_region(kind) && endpoint == ompt_scope_begin && top_work && !f.work_primary[f.works - 1]) {
+        end();
+        f.work_closed[f.works - 1] = true;
+        skip(); // the wait, paired with its late end but not recorded
+        return;
     }
     if (endpoint == ompt_scope_begin) {
         begin(g_barrier_sites[index]);

@@ -77,11 +77,16 @@
 WAGGLE_NAMESPACE_BEGIN
 
 // ---------------------- Profiler class ----------------------
+/// Forget the profiler the C interface reached it through (Abi.cpp): it is being destroyed.
+void detach_abi() noexcept;
+
 struct WAGGLE_EXPORT Profiler {
     static auto instance() -> Profiler &;
 
     /// The profiler if it has been built, else null; never builds it.
     static auto built() -> Profiler * { return s_built.load(std::memory_order_acquire); }
+    /// Whether the profiler was destroyed, at exit: from then every entry point does nothing.
+    static auto gone() -> bool { return s_gone.load(std::memory_order_acquire); }
 
     /// The process is exiting (waggle_at_exit): what the last finalize does, unless one already
     /// did it.
@@ -99,6 +104,9 @@ struct WAGGLE_EXPORT Profiler {
     /// Whether zones and annotations are recorded. When off, each entry point costs one relaxed load.
     [[nodiscard]] bool enabled() const { return std::atomic_ref<int32_t>(_enabled).load(std::memory_order_relaxed) != 0; }
     void               set_enabled(bool on) {
+        if (gone()) {
+            return;
+        }
         std::atomic_ref<int32_t>(_enabled).store(on ? 1 : 0, std::memory_order_relaxed);
         _domains.set_global(on);
     }
@@ -364,6 +372,13 @@ struct WAGGLE_EXPORT Profiler {
         } catch (...) {
             std::fprintf(stderr, "waggle: could not finish at exit\n");
         }
+        // Code still runs after this: other libraries' destructors, and runtimes tearing down
+        // their threads (libomp reports each worker's last task end from its exit handler). Every
+        // switch reads off, and every entry point does nothing, rather than reach this profiler.
+        std::atomic_ref<int32_t>(_enabled).store(0, std::memory_order_relaxed);
+        _domains.shut_off();
+        s_gone.store(true, std::memory_order_release);
+        detach_abi();
     }
 
     void write_node_json(std::ostream &ofs, AggNode const &n, int indent);
@@ -466,7 +481,8 @@ struct WAGGLE_EXPORT Profiler {
     /// Read and written only through std::atomic_ref, here and by every library that checks it
     /// inline: a plain int32_t is the one type the C interface can hand out. Mutable, as
     /// std::atomic_ref takes no const object, even to load.
-    alignas(std::atomic_ref<int32_t>::required_alignment) mutable int32_t _enabled{1};
+    /// Never freed, as the domain switches are not: callers cache its address (waggle_enabled_flag).
+    int32_t &_enabled = *new (std::align_val_t{std::atomic_ref<int32_t>::required_alignment}) int32_t{1}; // NOLINT
 
     /// The settings and who set them; under @ref _settings_mutex.
     mutable std::mutex _settings_mutex;
@@ -478,6 +494,7 @@ struct WAGGLE_EXPORT Profiler {
 
     /// Set as the constructor finishes, for @ref built.
     static inline std::atomic<Profiler *> s_built{nullptr};
+    static inline std::atomic<bool>       s_gone{false};
 
     /// Every thread's channel, for the life of the process; see @ref ThreadChannel.
     mutable std::mutex                          _channels_mutex;
