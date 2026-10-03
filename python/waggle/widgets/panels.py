@@ -18,7 +18,7 @@ from textual.widgets import RichLog, Static
 
 from ..analysis import aggregate_flat, derived_rates, find_node, summarize_counters
 from ..format import format_bytes, make_bar
-from ..model import LOG_LEVEL_NAMES, LogEntry, ProfileNode, ProfileSnapshot
+from ..model import LOG_LEVEL_NAMES, DeviceWork, LogEntry, ProfileNode, ProfileSnapshot
 
 LOG_LEVEL_STYLES = {0: "dim", 1: "cyan", 2: "green", 3: "yellow", 4: "red bold", 5: "red bold reverse", 7: "white bold"}
 
@@ -149,6 +149,26 @@ def hotspots(roots: Iterable[ProfileNode], top: int = 10) -> str:
             f"  {i:2d}  {n.exclusive_ms / total * 100:5.1f}%  {n.exclusive_ms:10.3f}  {n.call_count:8d}  "
             f"{n.mean_ms:10.3f}  {escape(n.name)}"
         )
+    return "\n".join(lines)
+
+
+def device_table(work: list[DeviceWork]) -> str:
+    """Device work by queue, most time first, with the host zone that submitted it."""
+    if not work:
+        return "No device work recorded (it comes from device zones, such as WAGGLE_METAL_ZONE)"
+    lines = []
+    for track in sorted({w.track for w in work}):
+        mine = sorted((w for w in work if w.track == track), key=lambda w: w.total_ms, reverse=True)
+        total = sum(w.total_ms for w in mine) or 1.0
+        lines += [
+            f"[bold magenta]{escape(track)}[/]  {sum(w.total_ms for w in mine):.3f} ms of work",
+            f"  {'%':>6s}  {'total(ms)':>10s}  {'count':>8s}  {'mean(ms)':>10s}  {'max(ms)':>10s}  {'name':<28s}  submitted in",
+        ]
+        lines += [
+            f"  {w.total_ms / total * 100:5.1f}%  {w.total_ms:10.3f}  {w.count:8d}  {w.mean_ms:10.3f}  {w.max_ms:10.3f}  "
+            f"{escape(f'{w.name:<28s}')}  {escape(w.submitter) or '[dim](no zone)[/]'}"
+            for w in mine
+        ]
     return "\n".join(lines)
 
 

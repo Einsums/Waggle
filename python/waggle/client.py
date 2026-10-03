@@ -22,11 +22,13 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from .model import (
+    DeviceWork,
     LogEntry,
     MemoryTrack,
     ProfileMeta,
     ProfileSnapshot,
     TimelineEvent,
+    parse_devices,
     parse_log,
     parse_meta,
     parse_snapshot,
@@ -58,6 +60,8 @@ class StreamState:
         self.timeline: list[TimelineEvent] = []
         #: None until the server sends a ``memory`` message: one from before the allocation track sends none.
         self.memory: MemoryTrack | None = None
+        #: Device work by queue and name, the server's current summary.
+        self.devices: list[DeviceWork] = []
         self.log_entries: deque[LogEntry] = deque(maxlen=log_capacity)
         #: Total log entries ever appended, so a viewer can tell new ones from old after the deque wraps.
         self.log_total = 0
@@ -78,6 +82,8 @@ class StreamState:
                 self.meta.sources = [s for s in msg["sources"] if isinstance(s, dict)]
         elif kind == "timeline":
             self.timeline = parse_timeline(msg)
+        elif kind == "devices":
+            self.devices = parse_devices(msg)
         elif kind == "memory":
             if self.memory is None:
                 self.memory = MemoryTrack()

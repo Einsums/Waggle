@@ -6,7 +6,7 @@
 The server (``src/Server.cpp``) sends JSON Lines over TCP. Each
 line is one message with a ``type``: ``meta`` once per connection, then ``snapshot``
 (the aggregated call tree of every thread), ``timeline`` (recent zone spans),
-``memory`` (the allocation track), ``log``, ``output``, ``benchmark_result``, and ``response`` to a ``request``.
+``memory`` (the allocation track), ``devices`` (device work by name), ``log``, ``output``, ``benchmark_result``, and ``response`` to a ``request``.
 
 Nothing in this module imports Textual, so the bench commands and the tests use it
 without the UI dependency.
@@ -121,12 +121,64 @@ class ProfileMeta:
 
 @dataclass
 class TimelineEvent:
-    """One zone span, for the Gantt chart."""
+    """One zone span, or one piece of device work, for the Gantt chart."""
 
     thread_id: str = ""
     name: str = ""
     start_ms: float = 0.0
     end_ms: float = 0.0
+    #: The device queue the work ran on; empty for a host thread's zone.
+    track: str = ""
+
+    @property
+    def row(self) -> str:
+        """The Gantt row it belongs on: its thread's, or its device queue's."""
+        return f"device:{self.track}" if self.track else self.thread_id
+
+
+@dataclass
+class DeviceWork:
+    """Device work of one name on one device queue, summed."""
+
+    track: str = ""
+    name: str = ""
+    count: int = 0
+    total_ms: float = 0.0
+    min_ms: float = 0.0
+    max_ms: float = 0.0
+    #: The host zone that submitted most of it; empty when none.
+    submitter: str = ""
+
+    @property
+    def mean_ms(self) -> float:
+        return self.total_ms / self.count if self.count else 0.0
+
+
+def parse_devices(data: dict[str, Any]) -> list[DeviceWork]:
+    return [
+        DeviceWork(
+            track=str(w.get("track", "")),
+            name=str(w.get("name", "")),
+            count=int(w.get("count", 0)),
+            total_ms=float(w.get("total_ms", 0.0)),
+            min_ms=float(w.get("min_ms", 0.0)),
+            max_ms=float(w.get("max_ms", 0.0)),
+            submitter=str(w.get("submitter", "")),
+        )
+        for w in data.get("work") or []
+        if isinstance(w, dict)
+    ]
+
+
+def devices_to_dict(work: list[DeviceWork]) -> dict[str, Any]:
+    """The shape of a ``devices`` message."""
+    return {
+        "work": [
+            {"track": w.track, "name": w.name, "count": w.count, "total_ms": w.total_ms, "min_ms": w.min_ms,
+             "max_ms": w.max_ms, "submitter": w.submitter}
+            for w in work
+        ]
+    }  # fmt: skip
 
 
 @dataclass
@@ -328,6 +380,7 @@ def parse_timeline(data: dict[str, Any]) -> list[TimelineEvent]:
             name=event.get("name", ""),
             start_ms=event.get("start_ms", 0.0),
             end_ms=event.get("end_ms", 0.0),
+            track=str(event.get("track", "")),
         )
         for event in data.get("events", [])
     ]

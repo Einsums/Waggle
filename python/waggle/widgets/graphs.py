@@ -315,18 +315,24 @@ class GanttChart(_TimeChart):
 
         lines = [_time_axis(t0, t1, self.LABEL_WIDTH, chart, "thread")]
 
-        threads: dict[str, list[TimelineEvent]] = {}
+        # Host threads first, then device queues, each a row.
+        rows: dict[str, list[TimelineEvent]] = {}
         for event in self._events:
             if event.end_ms >= t0 and event.start_ms <= t1:
-                threads.setdefault(event.thread_id, []).append(event)
-        for tid, events in sorted(threads.items())[: max(1, (self.size.height or 20) - 1)]:
+                rows.setdefault(event.row, []).append(event)
+        ordered = sorted(rows.items(), key=lambda kv: (kv[1][0].track != "", kv[0]))
+        for _, events in ordered[: max(1, (self.size.height or 20) - 1)]:
             # The innermost zone wins a cell: later (nested) events overwrite earlier ones.
             owner: list[TimelineEvent | None] = [None] * chart
             for event in sorted(events, key=lambda e: (e.start_ms, -(e.end_ms - e.start_ms))):
                 lo = max(0, min(chart - 1, int((event.start_ms - t0) / span * chart)))
                 hi = max(lo + 1, min(chart, int((event.end_ms - t0) / span * chart)))
                 owner[lo:hi] = [event] * (hi - lo)
-            line = Text(f"T{tid}"[: self.LABEL_WIDTH - 1].ljust(self.LABEL_WIDTH), style="bold")
+            track = events[0].track
+            label = track if track else f"T{events[0].thread_id}"
+            if len(label) > self.LABEL_WIDTH - 1:
+                label = label[: self.LABEL_WIDTH - 2] + "…"
+            line = Text(label.ljust(self.LABEL_WIDTH), style="bold magenta" if track else "bold")
             col = 0
             while col < chart:
                 event = owner[col]

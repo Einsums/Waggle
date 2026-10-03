@@ -35,6 +35,7 @@ from .widgets.panels import (
     StatusBar,
     TextPanel,
     counter_analysis,
+    device_table,
     highlight_asm,
     hotspots,
     node_details,
@@ -76,6 +77,7 @@ KEYMAP: list[tuple[str, list[tuple[str, str, str, str | None]]]] = [
         ("o", "toggle_panel('roofline')", "Roofline", None),
         ("G", "toggle_panel('gantt')", "Thread Gantt chart", None),
         ("m", "toggle_panel('memory')", "Allocation track: live bytes and live allocations", None),
+        ("k", "toggle_panel('devices')", "Device work: GPU time by name and queue", None),
         ("M", "toggle_panel('counters')", "Hardware counters", None),
         ("A", "toggle_panel('disasm')", "Disassembly", None),
         ("V", "toggle_panel('source')", "Source", None),
@@ -104,7 +106,7 @@ KEYMAP: list[tuple[str, list[tuple[str, str, str, str | None]]]] = [
 ]  # fmt: skip
 
 #: Panel name -> widget id. Every one starts hidden. Plugins add panels of their own.
-PANELS = ("hotspots", "flame", "timeline", "roofline", "gantt", "memory", "counters", "disasm", "source", "log")
+PANELS = ("hotspots", "flame", "timeline", "roofline", "gantt", "memory", "devices", "counters", "disasm", "source", "log")
 
 REFRESH_INTERVAL = 0.25  # seconds between redraws of sessions with new data
 
@@ -207,6 +209,7 @@ class ProfilerApp(App):
         yield RooflinePlot(id="roofline", classes="panel")
         yield GanttChart(id="gantt", classes="panel")
         yield AllocationTrack(id="memory", classes="panel")
+        yield TextPanel(id="devices", classes="panel")
         yield TextPanel("Select a row", id="counters", classes="panel")
         yield TextPanel("Select a row", id="disasm", classes="panel")
         yield TextPanel("Select a row", id="source", classes="panel")
@@ -324,6 +327,8 @@ class ProfilerApp(App):
             session.timeline = state.timeline
         elif kind == "memory":
             session.memory = state.memory
+        elif kind == "devices":
+            session.devices = state.devices
         elif kind in ("log", "output"):
             session.log_entries, session.log_total = state.log_entries, state.log_total
         else:
@@ -388,6 +393,8 @@ class ProfilerApp(App):
                 self.query_one(GanttChart).set_events(session.timeline, window)
             if self._visible("memory"):
                 self.query_one(AllocationTrack).set_track(session.memory, window)
+        if self._visible("devices"):
+            self.query_one("#devices", TextPanel).show(device_table(session.devices))
         if self._visible("log"):
             self.query_one(LogPanel).show(session.log_entries, session.log_total)
 

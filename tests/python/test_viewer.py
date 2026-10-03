@@ -531,6 +531,47 @@ def test_the_allocation_track_lines_up_with_the_gantt_chart_and_zooms_with_it():
     asyncio.run(main())
 
 
+@needs_textual
+def test_device_work_has_rows_on_the_timeline_and_a_table():
+    mod = app_module()
+    timeline = {"type": "timeline", "events": [
+        {"tid": 7, "name": "submit", "start_ms": 0.0, "end_ms": 10.0},
+        {"track": "Metal: Apple M4 Max", "name": "mps gemm", "start_ms": 2.0, "end_ms": 8.0},
+    ]}  # fmt: skip
+    devices = {"type": "devices", "work": [
+        {"track": "Metal: Apple M4 Max", "name": "mps gemm", "count": 3, "total_ms": 18.0, "min_ms": 5.0, "max_ms": 7.0,
+         "submitter": "submit"},
+    ]}  # fmt: skip
+
+    async def main():
+        server, port = await fake_server([(json.dumps(m) + "\n").encode() for m in (META, snapshot_msg(1), timeline, devices)])
+        app = mod.ProfilerApp([("127.0.0.1", port)], mdns=False)
+        async with app.run_test(size=(140, 60)) as pilot:
+            await wait_for(pilot, lambda: app.active_session is not None and app.active_session.devices)
+            await pilot.press("G", "k")
+            await pilot.pause()
+            gantt = app.query_one(mod.GanttChart).render().plain.splitlines()
+            # The host thread's row, then the device queue's, labelled by the queue.
+            assert gantt[1].startswith("T7") and gantt[2].startswith("Metal: Apple…")
+            assert "mps gemm" in gantt[2]
+            table = app.query_one("#devices")._text
+            assert "Metal: Apple M4 Max" in table and "mps gemm" in table and "submit" in table and "18.000" in table
+            await pilot.press("q")
+        server.close()
+
+    asyncio.run(main())
+
+
+def test_device_work_saves_with_the_session(tmp_path):
+    from waggle.model import parse_devices
+
+    session = Session("s1", "mine", snapshot=parse_snapshot(snapshot_msg()))
+    session.devices = parse_devices({"work": [{"track": "q", "name": "k", "count": 2, "total_ms": 3.0, "min_ms": 1.0, "max_ms": 2.0}]})
+    write_session_file(tmp_path / "s.json", [session])
+    loaded = session_from_dict(read_session_file(tmp_path / "s.json")[0], "x")
+    assert loaded.devices == session.devices and loaded.devices[0].mean_ms == 1.5
+
+
 def test_help_shows_the_character_a_key_types():
     pytest.importorskip("textual")
     from waggle.app import key_label

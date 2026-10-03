@@ -53,6 +53,11 @@ Screen {
     height: 23;
 }
 
+#devices {
+    height: auto;
+    max-height: 15;
+}
+
 #counters {
     height: auto;
     max-height: 20;
