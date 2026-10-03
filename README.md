@@ -107,8 +107,8 @@ cmake --build build
 ctest --test-dir build
 ```
 
-The live server is POSIX-only for now.
-On Windows the collector records, reports and saves sessions.
+Waggle builds and is tested on Linux, macOS and Windows.
+On macOS the viewer finds running programs over mDNS; on Linux and Windows it connects by host and port.
 
 ## License
 
