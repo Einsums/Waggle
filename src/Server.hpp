@@ -106,6 +106,13 @@ class WAGGLE_EXPORT Server {
     void write_node_json(std::string &out, AggNode const &n);
     void write_timeline_json(std::string &out);
 
+    /// A ``memory`` line: the allocation track's samples after @p after, and the largest live
+    /// allocations. Caller holds the consumer's shared lock.
+    void write_memory_json(std::string &out, uint64_t after);
+
+    /// The largest live allocations a ``memory`` message lists.
+    static constexpr size_t kLiveAllocationsShown = 50;
+
     void register_mdns(uint16_t port);
     void unregister_mdns();
 
@@ -126,8 +133,10 @@ class WAGGLE_EXPORT Server {
     /// affects a caching decision.
     std::atomic<bool> _has_client{false};
 
-    uint64_t             _seq        = 0;
-    static constexpr int kMaxClients = 4;
+    uint64_t _seq = 0;
+    /// The last allocation-track sample sent to the connected viewers.
+    uint64_t             _memory_sent = 0;
+    static constexpr int kMaxClients  = 4;
 
     /// Per-client receive buffer for incoming requests.
     std::unordered_map<socket_t, std::string> _recv_buffers;

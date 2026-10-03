@@ -610,6 +610,9 @@ void Server::send_snapshot_to(socket_t fd) {
     }
     msg += "}}\n";
 
+    // The whole allocation track for a viewer that just connected.
+    write_memory_json(msg, 0);
+
     // Append any accumulated log messages so the initial snapshot includes them
     auto logs = _log_queue.drain();
     for (auto const &entry : logs) {
@@ -653,6 +656,27 @@ void Server::write_timeline_json(std::string &out) {
     out += "]}\n";
 }
 
+void Server::write_memory_json(std::string &out, uint64_t after) {
+    auto const samples = _consumer.memory_samples(after);
+    auto const live    = _consumer.live_allocations(kLiveAllocationsShown);
+    if (samples.empty() && live.empty() && after != 0) {
+        return;
+    }
+    out += R"({"type":"memory","live_bytes":)" + std::to_string(_consumer.live_bytes());
+    out += ",\"untracked\":" + std::to_string(_consumer.untracked_allocations());
+    out += ",\"samples\":[";
+    for (size_t i = 0; i < samples.size(); ++i) {
+        out += fmt::format("{}[{:.3f},{}]", i > 0 ? "," : "", samples[i].t_ms, samples[i].live_bytes);
+    }
+    out += "],\"live\":[";
+    for (size_t i = 0; i < live.size(); ++i) {
+        auto const &a = live[i];
+        out += fmt::format(R"({}{{"address":"{:#x}","bytes":{},"t_ms":{:.3f},"tid":{},"zone":"{}"}})", i > 0 ? "," : "", a.address, a.bytes,
+                           a.t_ms, a.thread_id, escape_json_str(a.zone));
+    }
+    out += "]}\n";
+}
+
 void Server::send_updates() {
     if (_client_fds.empty())
         return;
@@ -685,6 +709,10 @@ void Server::send_updates() {
 
     // Append timeline events
     write_timeline_json(msg);
+
+    // The allocation track: what is new since the last send.
+    write_memory_json(msg, _memory_sent);
+    _memory_sent = _consumer.memory_seq();
 
     // Append log messages
     auto logs = _log_queue.drain();
@@ -993,6 +1021,14 @@ void Server::export_session(std::string const &path, std::string const &label,
     }
 
     // What libraries registered for session files, each under its own key.
+    {
+        std::string memory;
+        write_memory_json(memory, 0);
+        if (!memory.empty()) {
+            memory.pop_back(); // its line break; it sits inside the session object here
+            json += ",\n  \"memory\": " + memory;
+        }
+    }
     json += ",\n  \"extensions\": {";
     bool first_section = true;
     for (auto const &[key, value] : _handlers.session_sections()) {

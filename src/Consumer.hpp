@@ -141,6 +141,23 @@ struct TimelineEvent {
     double      end_ms;
 };
 
+// ---------------------- Allocation history for the allocation track ----------------------
+/// The process's live tracked bytes just after one allocation or free.
+struct MemorySample {
+    uint64_t seq;        ///< 1 for the first sample ever taken, counting on across the ring's wraps
+    double   t_ms;       ///< relative to program start
+    int64_t  live_bytes; ///< allocated less freed, every thread, every zone
+};
+
+/// An allocation not yet freed, as the allocation track lists it.
+struct LiveAllocation {
+    uint64_t    address;
+    int64_t     bytes;
+    double      t_ms;      ///< when it was made, relative to program start
+    uint32_t    thread_id; ///< the thread that made it
+    std::string zone;      ///< the innermost zone open as it was made; empty outside every zone
+};
+
 // ---------------------- Per-thread state reconstructed by consumer ----------------------
 struct ThreadState {
     struct StackFrame {
@@ -234,6 +251,24 @@ class WAGGLE_EXPORT Consumer {
     /// Maximum number of timeline events to keep.
     static constexpr size_t kMaxTimelineEvents = 1000;
 
+    /// The allocation track's samples after sequence number @p after, oldest first: every one the
+    /// ring still holds if it has wrapped past @p after. Caller must hold the shared lock.
+    auto memory_samples(uint64_t after = 0) const -> std::vector<MemorySample>;
+
+    /// The @p count largest allocations still live, largest first. Caller must hold the shared lock.
+    auto live_allocations(size_t count) const -> std::vector<LiveAllocation>;
+
+    /// The process's live tracked bytes now, and how many allocations the live table could not
+    /// take (it holds at most kMaxLiveAllocations). Caller must hold the shared lock.
+    auto live_bytes() const -> int64_t { return _live_bytes; }
+    /// The sequence number of the latest sample. Caller must hold the shared lock.
+    auto memory_seq() const -> uint64_t { return _memory_seq; }
+    auto untracked_allocations() const -> uint64_t { return _untracked_allocations; }
+
+    /// The samples the allocation track keeps, and the allocations its live table holds.
+    static constexpr size_t kMaxMemorySamples   = 16384;
+    static constexpr size_t kMaxLiveAllocations = 65536;
+
     /// Collect all annotations from the current zone and all ancestor zones for the given thread.
     /// Child annotations override parent annotations with the same key.
     /// Caller must hold shared lock.
@@ -268,7 +303,7 @@ class WAGGLE_EXPORT Consumer {
     void   process_push(ThreadState &ts, Event const &evt);
     void   process_pop(ThreadState &ts, Event const &evt, uint32_t thread_id);
     void   process_annotate(ThreadState &ts, Event const &evt);
-    void   process_mem(ThreadState &ts, Event const &evt);
+    void   process_mem(ThreadState &ts, Event const &evt, uint32_t thread_id);
 
     /// Close, unrecorded, the frames deeper than @p depth: their Pops were dropped and will never come.
     void unwind_stale_frames(ThreadState &ts, size_t depth);
@@ -313,6 +348,21 @@ class WAGGLE_EXPORT Consumer {
     };
     std::vector<TimelineRecord> _timeline;
     size_t                      _timeline_next{0};
+
+    /// The allocation track, under _tree_mutex: a ring of the last kMaxMemorySamples samples written
+    /// at _memory_next, the running total, and the allocations not yet freed, by address.
+    struct LiveRecord {
+        int64_t  bytes;
+        double   t_ms;
+        uint32_t thread_id;
+        uint32_t name_id;
+    };
+    std::vector<MemorySample>                _memory;
+    size_t                                   _memory_next{0};
+    uint64_t                                 _memory_seq{0};
+    int64_t                                  _live_bytes{0};
+    uint64_t                                 _untracked_allocations{0};
+    std::unordered_map<uint64_t, LiveRecord> _live;
 
     /// When the last reset happened, in raw ticks; 0 before any. A zone open across a reset whose
     /// Push was still waiting on its thread arrives afterwards with its real start, and is timed

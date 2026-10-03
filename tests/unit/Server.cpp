@@ -254,6 +254,8 @@ TEST_CASE("The meta message lists every client and every switched-off collector"
     CHECK(meta.find(R"("handlers":["alpha_method","zeta_method"])") != std::string::npos);
     // Copies of the collector that switched themselves off: their libraries' zones are missing.
     CHECK(meta.find(R"("duplicates":[{"path":"/opt/lib/libwaggle.0.dylib","abi":"0.1"}])") != std::string::npos);
+    // The allocation track comes with the first update, whole.
+    CHECK(reader.next({R"("type":"memory")"}).find(R"("samples":[)") != std::string::npos);
     close_client(client);
     server.shutdown();
 }

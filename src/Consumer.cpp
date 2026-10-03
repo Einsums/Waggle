@@ -26,6 +26,41 @@ Consumer::~Consumer() {
     shutdown();
 }
 
+auto Consumer::memory_samples(uint64_t after) const -> std::vector<MemorySample> {
+    std::vector<MemorySample> out;
+    // Oldest first: once the ring has wrapped, the oldest sample is the one about to be overwritten.
+    size_t const start = _memory.size() < kMaxMemorySamples ? 0 : _memory_next;
+    for (size_t k = 0; k < _memory.size(); ++k) {
+        auto const &sample = _memory[(start + k) % _memory.size()];
+        if (sample.seq > after) {
+            out.push_back(sample);
+        }
+    }
+    return out;
+}
+
+auto Consumer::live_allocations(size_t count) const -> std::vector<LiveAllocation> {
+    std::vector<std::pair<uint64_t, LiveRecord const *>> all;
+    all.reserve(_live.size());
+    for (auto const &[address, rec] : _live) {
+        all.emplace_back(address, &rec);
+    }
+    size_t const n = std::min(count, all.size());
+    std::partial_sort(all.begin(), all.begin() + static_cast<std::ptrdiff_t>(n), all.end(),
+                      [](auto const &a, auto const &b) { return a.second->bytes > b.second->bytes; });
+    std::vector<LiveAllocation> out;
+    out.reserve(n);
+    for (size_t i = 0; i < n; ++i) {
+        auto const &[address, rec] = all[i];
+        out.push_back({.address   = address,
+                       .bytes     = rec->bytes,
+                       .t_ms      = rec->t_ms,
+                       .thread_id = rec->thread_id,
+                       .zone      = rec->name_id != 0 ? _strings.get(rec->name_id) : std::string{}});
+    }
+    return out;
+}
+
 auto Consumer::timeline_events() const -> std::vector<TimelineEvent> {
     std::vector<TimelineEvent> out;
     out.reserve(_timeline.size());
@@ -145,6 +180,9 @@ void Consumer::reset() {
 
     _timeline.clear();
     _timeline_next = 0;
+    // The curve starts again; what is still allocated stays allocated.
+    _memory.clear();
+    _memory_next = 0;
 }
 
 void Consumer::consumer_loop() {
@@ -218,7 +256,7 @@ void Consumer::process_event(uint32_t thread_id, Event const &evt) {
         break;
     case EventType::MemAlloc:
     case EventType::MemFree:
-        process_mem(ts, evt);
+        process_mem(ts, evt, thread_id);
         break;
     case EventType::Zone: {
         // Its Push and its Pop, as they would have arrived.
@@ -462,7 +500,33 @@ void Consumer::process_annotate(ThreadState &ts, Event const &evt) {
     }
 }
 
-void Consumer::process_mem(ThreadState &ts, Event const &evt) {
+void Consumer::process_mem(ThreadState &ts, Event const &evt, uint32_t thread_id) {
+    bool const alloc = evt.type == EventType::MemAlloc;
+
+    // The allocation track: every allocation and free, in a zone or not.
+    double const t_ms = std::chrono::duration<double, std::milli>(TickClock::instance().to_time_point(evt.ticks) - _program_start).count();
+    _live_bytes += alloc ? evt.mem.bytes : -evt.mem.bytes;
+    MemorySample const sample{.seq = ++_memory_seq, .t_ms = t_ms, .live_bytes = _live_bytes};
+    if (_memory.size() < kMaxMemorySamples) {
+        _memory.push_back(sample);
+    } else {
+        _memory[_memory_next] = sample;
+    }
+    _memory_next = (_memory_next + 1) % kMaxMemorySamples;
+    // Only an allocation with an address can be matched to its free.
+    if (evt.mem.address != 0) {
+        if (alloc) {
+            if (_live.size() < kMaxLiveAllocations) {
+                uint32_t const name_id = !ts.stack.empty() ? ts.stack.back().name_id : 0;
+                _live[evt.mem.address] = {.bytes = evt.mem.bytes, .t_ms = t_ms, .thread_id = thread_id, .name_id = name_id};
+            } else {
+                ++_untracked_allocations;
+            }
+        } else {
+            _live.erase(evt.mem.address);
+        }
+    }
+
     if (ts.stack.empty())
         return;
 

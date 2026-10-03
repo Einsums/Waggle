@@ -952,6 +952,8 @@ constexpr char const *waggle_domain(::waggle::domain_lookup /*unused*/) noexcept
 #    define WAGGLE_ANNOTATE_DIMS(key, dims)
 #    define WAGGLE_MEM_ALLOC(bytes)
 #    define WAGGLE_MEM_FREE(bytes)
+#    define WAGGLE_MEM_ALLOC_AT(address, bytes)
+#    define WAGGLE_MEM_FREE_AT(address, bytes)
 #else
 // Open a zone for the rest of the scope. Name, file and function are interned once per site; with
 // format arguments the name is cached per distinct value (see ScopedZone).
@@ -995,19 +997,22 @@ constexpr char const *waggle_domain(::waggle::domain_lookup /*unused*/) noexcept
             ::waggle::site_cache::annotate_at(_annotate_site, key, [&]() -> decltype(auto) { return (value); }, WAGGLE_CURRENT_DOMAIN);    \
         }()
 #    define WAGGLE_ANNOTATE_DIMS(key, dims) ::waggle::annotate_dims(key, dims)
-// Memory is attributed only where the zone it belongs to records: not when the domain is off.
-#    define WAGGLE_MEM_ALLOC(bytes)                                                                                                        \
+// Memory is attributed only where the zone it belongs to records: not when the domain is off. The
+// _AT forms give the block's address, which lets the allocation track list it until its free.
+#    define WAGGLE_MEM_ALLOC_AT(address, bytes)                                                                                            \
         [&]() {                                                                                                                            \
             static std::int32_t const *const _waggle_switch = ::waggle_domain_flag(::waggle::register_domain(WAGGLE_CURRENT_DOMAIN));      \
             if (::waggle::detail::on(_waggle_switch)) {                                                                                    \
-                ::waggle::mem_alloc(static_cast<int64_t>(bytes));                                                                          \
+                ::waggle::mem_alloc(static_cast<int64_t>(bytes), (address));                                                               \
             }                                                                                                                              \
         }()
-#    define WAGGLE_MEM_FREE(bytes)                                                                                                         \
+#    define WAGGLE_MEM_FREE_AT(address, bytes)                                                                                             \
         [&]() {                                                                                                                            \
             static std::int32_t const *const _waggle_switch = ::waggle_domain_flag(::waggle::register_domain(WAGGLE_CURRENT_DOMAIN));      \
             if (::waggle::detail::on(_waggle_switch)) {                                                                                    \
-                ::waggle::mem_free(static_cast<int64_t>(bytes));                                                                           \
+                ::waggle::mem_free(static_cast<int64_t>(bytes), (address));                                                                \
             }                                                                                                                              \
         }()
+#    define WAGGLE_MEM_ALLOC(bytes) WAGGLE_MEM_ALLOC_AT(nullptr, bytes)
+#    define WAGGLE_MEM_FREE(bytes)  WAGGLE_MEM_FREE_AT(nullptr, bytes)
 #endif

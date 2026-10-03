@@ -390,3 +390,67 @@ TEST_CASE("The report's thread total includes nested zones", "[profiler][consume
     double const shown = std::stod(text.substr(at + header.size()));
     CHECK_THAT(shown, Catch::Matchers::WithinAbs(expected_ms, 0.001));
 }
+
+// The allocation track: live bytes over time, and the allocations not yet freed, with the zone
+// that made each.
+TEST_CASE("The allocation track follows allocations and frees", "[profiler][consumer][memory]") {
+    auto &prof = Profiler::instance();
+    prof.set_enabled(true);
+    std::array<char, 3> blocks{}; // three distinct addresses
+
+    uint64_t before = 0;
+    {
+        wait_for_drain();
+        auto lock = prof.consumer()->lock_shared();
+        before    = prof.consumer()->memory_seq();
+    }
+    std::thread([&] {
+        WAGGLE_ZONE("memory track zone");
+        WAGGLE_MEM_ALLOC_AT(&blocks[0], 1000);
+        WAGGLE_MEM_ALLOC_AT(&blocks[1], 3000);
+        WAGGLE_MEM_ALLOC_AT(&blocks[2], 2000);
+        WAGGLE_MEM_FREE_AT(&blocks[1], 3000);
+    }).join();
+    wait_for_drain();
+
+    auto        lock     = prof.consumer()->lock_shared();
+    auto const *consumer = prof.consumer();
+    auto const  samples  = consumer->memory_samples(before);
+    REQUIRE(samples.size() == 4);
+    CHECK(samples[1].live_bytes - samples[0].live_bytes == 3000);
+    CHECK(samples[3].live_bytes - samples[2].live_bytes == -3000);
+    CHECK(samples[3].seq == consumer->memory_seq());
+    CHECK(consumer->memory_samples(consumer->memory_seq()).empty());
+
+    // Largest first; the freed one is gone.
+    std::vector<LiveAllocation> mine;
+    for (auto const &a : consumer->live_allocations(Consumer::kMaxLiveAllocations)) {
+        if (a.address >= reinterpret_cast<uint64_t>(&blocks[0]) && a.address <= reinterpret_cast<uint64_t>(&blocks[2])) {
+            mine.push_back(a);
+        }
+    }
+    REQUIRE(mine.size() == 2);
+    CHECK(mine[0].bytes == 2000);
+    CHECK(mine[0].address == reinterpret_cast<uint64_t>(&blocks[2]));
+    CHECK(mine[0].zone == "memory track zone");
+    CHECK(mine[1].bytes == 1000);
+}
+
+TEST_CASE("A reset starts the allocation curve again and keeps what is still allocated", "[profiler][consumer][memory]") {
+    auto &prof = Profiler::instance();
+    prof.set_enabled(true);
+    char block = 0;
+    std::thread([&] { waggle::mem_alloc(512, &block); }).join();
+    prof.reset();
+    {
+        auto lock = prof.consumer()->lock_shared();
+        CHECK(prof.consumer()->memory_samples().empty());
+        bool kept = false;
+        for (auto const &a : prof.consumer()->live_allocations(Consumer::kMaxLiveAllocations)) {
+            kept = kept || a.address == reinterpret_cast<uint64_t>(&block);
+        }
+        CHECK(kept);
+    }
+    std::thread([&] { waggle::mem_free(512, &block); }).join();
+    wait_for_drain();
+}
