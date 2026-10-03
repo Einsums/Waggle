@@ -250,14 +250,14 @@ def test_the_viewer_reads_a_programs_allocation_track(tmp_path):
         program.wait(timeout=60)
 
 
-@pytest.mark.skipif(
-    sys.platform.startswith("linux") and not os.path.exists("/run/avahi-daemon/socket"),
-    reason="Linux advertises through the Avahi daemon, which is not running",
-)
 def test_a_server_advertises_itself_to_the_viewer():
     # End to end: the program's server advertises over mDNS, and the viewer's browser finds it by
-    # the port it listens on.
-    pytest.importorskip("zeroconf", reason="the viewer finds servers through python-zeroconf")
+    # the port it listens on. CI sets WAGGLE_REQUIRE_MDNS, so a missing responder fails there
+    # instead of skipping.
+    if not os.environ.get("WAGGLE_REQUIRE_MDNS"):
+        if sys.platform.startswith("linux") and not os.path.exists("/run/avahi-daemon/socket"):
+            pytest.skip("Linux advertises through the Avahi daemon, which is not running")
+        pytest.importorskip("zeroconf", reason="the viewer finds servers through python-zeroconf")
     import queue
     import socket
 
