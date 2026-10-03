@@ -23,8 +23,10 @@
 #    ifndef NOMINMAX
 #        define NOMINMAX
 #    endif
-#    include <windns.h>
 #    include <windows.h>
+// windns.h needs the types windows.h defines; the blank line keeps clang-format from sorting it first.
+
+#    include <windns.h>
 #endif
 
 WAGGLE_NAMESPACE_BEGIN
