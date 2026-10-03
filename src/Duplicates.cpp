@@ -23,6 +23,13 @@
 #elif defined(__linux__)
 #    include <dlfcn.h>
 #    include <link.h>
+#elif defined(_WIN32)
+#    ifndef NOMINMAX
+#        define NOMINMAX
+#    endif
+#    include <windows.h>
+// After windows.h, which it needs.
+#    include <psapi.h>
 #endif
 
 extern "C" {
@@ -132,10 +139,80 @@ auto detect() -> bool {
     return true;
 }
 
+#elif defined(_WIN32)
+
+/// An address in this copy's module, by a function it never exports (see the POSIX version).
+void image_anchor() {
+}
+
+/// @p module's file, in UTF-8.
+auto module_path(HMODULE module) -> std::string {
+    std::wstring wide(MAX_PATH, L'\0');
+    while (true) {
+        DWORD const n = GetModuleFileNameW(module, wide.data(), static_cast<DWORD>(wide.size()));
+        if (n == 0) {
+            return {};
+        }
+        if (n < wide.size()) {
+            wide.resize(n);
+            break;
+        }
+        wide.resize(wide.size() * 2);
+    }
+    int const   bytes = WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), nullptr, 0, nullptr, nullptr);
+    std::string path(static_cast<size_t>(bytes), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), path.data(), bytes, nullptr, nullptr);
+    return path;
+}
+
+/// Switch off if another collector is loaded: warn, and tell the other one. GetProcAddress looks in
+/// one module only, so a module that has the marker is a collector.
+auto detect() -> bool {
+    HMODULE self = nullptr;
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(&image_anchor), &self) == 0) {
+        return false;
+    }
+    HANDLE const         process = GetCurrentProcess();
+    std::vector<HMODULE> modules(256);
+    DWORD                needed = 0;
+    while (true) {
+        auto const size = static_cast<DWORD>(modules.size() * sizeof(HMODULE));
+        if (EnumProcessModules(process, modules.data(), size, &needed) == 0) {
+            return false;
+        }
+        if (needed <= size) {
+            modules.resize(needed / sizeof(HMODULE));
+            break;
+        }
+        modules.resize(needed / sizeof(HMODULE));
+    }
+
+    for (HMODULE const module : modules) {
+        if (module == self || GetProcAddress(module, "waggle_collector_marker_v1") == nullptr) {
+            continue;
+        }
+        std::string const self_path   = module_path(self);
+        std::string const other_path  = module_path(module);
+        uint32_t          other_major = 0;
+        uint32_t          other_minor = 0;
+        if (auto *version = reinterpret_cast<void (*)(uint32_t *, uint32_t *)>(GetProcAddress(module, "waggle_abi_version"))) {
+            version(&other_major, &other_minor);
+        }
+        std::fprintf(stderr,
+                     "waggle: a second copy of the profiler, %s (interface %u.%u), was loaded beside %s (interface %u.%u); it is off, "
+                     "and the zones of the libraries that use it are not recorded\n",
+                     self_path.c_str(), WAGGLE_ABI_MAJOR, WAGGLE_ABI_MINOR, other_path.c_str(), other_major, other_minor);
+        if (auto *note = reinterpret_cast<void (*)(char const *, uint32_t, uint32_t)>(GetProcAddress(module, "waggle_note_duplicate_v1"))) {
+            note(self_path.c_str(), WAGGLE_ABI_MAJOR, WAGGLE_ABI_MINOR);
+        }
+        return true;
+    }
+    return false;
+}
+
 #else
 
-// Windows lists its modules with EnumProcessModules and looks symbols up with GetProcAddress;
-// that arrives with the rest of Windows support. Until then a second copy stays on.
 auto detect() -> bool {
     return false;
 }

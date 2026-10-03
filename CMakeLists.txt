@@ -53,7 +53,7 @@ target_include_directories(
 target_compile_definitions(waggle PRIVATE WAGGLE_EXPORTS)
 target_link_libraries(waggle PUBLIC fmt::fmt PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
 if(WIN32)
-  target_link_libraries(waggle PRIVATE ws2_32)
+  target_link_libraries(waggle PRIVATE ws2_32 psapi)
 endif()
 set_target_properties(
   waggle

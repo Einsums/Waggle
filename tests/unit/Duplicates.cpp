@@ -18,8 +18,45 @@
 
 #include "Profiler.hpp"
 
-#if defined(__APPLE__) || defined(__linux__)
+#ifdef _WIN32
+#    ifndef NOMINMAX
+#        define NOMINMAX
+#    endif
+#    include <windows.h>
+#else
 #    include <dlfcn.h>
+#endif
+
+namespace {
+
+/// Load a library privately, as Python loads an extension, and look symbols up in it.
+#ifdef _WIN32
+using library = HMODULE;
+library load(char const *path) {
+    return LoadLibraryA(path);
+}
+template <typename F>
+F symbol(library lib, char const *name) {
+    return reinterpret_cast<F>(GetProcAddress(lib, name));
+}
+void unload(library lib) {
+    FreeLibrary(lib);
+}
+#else
+using library = void *;
+library load(char const *path) {
+    return dlopen(path, RTLD_NOW | RTLD_LOCAL);
+}
+template <typename F>
+F symbol(library lib, char const *name) {
+    return reinterpret_cast<F>(dlsym(lib, name));
+}
+void unload(library lib) {
+    dlclose(lib);
+}
+#endif
+
+} // namespace
 
 TEST_CASE("A second copy of the collector switches itself off and is reported", "[profiler][duplicates]") {
     // This copy is active: the test links it.
@@ -27,15 +64,15 @@ TEST_CASE("A second copy of the collector switches itself off and is reported", 
     REQUIRE(waggle::Profiler::instance().duplicates().empty());
 
     // As Python loads an extension: privately, so its symbols stay out of the global scope.
-    void *second = dlopen(WAGGLE_SECOND_COPY_PATH, RTLD_NOW | RTLD_LOCAL);
+    library const second = load(WAGGLE_SECOND_COPY_PATH);
     REQUIRE(second != nullptr);
 
     // The second copy is off: its switch reads off, it hands out no ids and takes no snapshots.
-    auto const enabled_flag  = reinterpret_cast<int32_t const *(*)()>(dlsym(second, "waggle_enabled_flag"));
-    auto const register_site = reinterpret_cast<uint32_t (*)(char const *, size_t, char const *, int, char const *, uint32_t)>(
-        dlsym(second, "waggle_register_site"));
-    auto const snapshot_take = reinterpret_cast<waggle_snapshot *(*)(uint32_t)>(dlsym(second, "waggle_snapshot_take"));
-    auto const set_enabled   = reinterpret_cast<void (*)(int)>(dlsym(second, "waggle_set_enabled"));
+    auto const enabled_flag = symbol<int32_t const *(*)()>(second, "waggle_enabled_flag");
+    auto const register_site =
+        symbol<uint32_t (*)(char const *, size_t, char const *, int, char const *, uint32_t)>(second, "waggle_register_site");
+    auto const snapshot_take = symbol<waggle_snapshot *(*)(uint32_t)>(second, "waggle_snapshot_take");
+    auto const set_enabled   = symbol<void (*)(int)>(second, "waggle_set_enabled");
     REQUIRE(enabled_flag != nullptr);
     REQUIRE(register_site != nullptr);
     REQUIRE(snapshot_take != nullptr);
@@ -63,7 +100,5 @@ TEST_CASE("A second copy of the collector switches itself off and is reported", 
     std::thread([] { WAGGLE_ZONE("duplicates: first copy still records"); }).join();
     CHECK(waggle::Snapshot::take().find("duplicates: first copy still records"));
 
-    dlclose(second);
+    unload(second);
 }
-
-#endif
