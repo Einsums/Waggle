@@ -139,9 +139,11 @@ TEST_CASE("A session file embeds every registered section", "[profiler][server]"
     server.export_session(path.string(), "sections");
     server.shutdown();
 
-    std::ifstream     in(path);
     std::stringstream contents;
-    contents << in.rdbuf();
+    {
+        std::ifstream in(path);
+        contents << in.rdbuf();
+    } // closed before the remove: Windows will not delete a file that is open
     std::filesystem::remove(path);
     std::string const text = contents.str();
     CHECK(text.find(R"("format": "waggle-session")") != std::string::npos);
