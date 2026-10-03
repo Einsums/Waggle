@@ -1,0 +1,38 @@
+---
+# We'll use defaults from the LLVM style, but with 4 columns indentation.
+BasedOnStyle: LLVM
+IndentWidth: 4
+---
+Language: Cpp
+ColumnLimit: 140
+IncludeBlocks: Regroup
+AlwaysBreakTemplateDeclarations: Yes
+AllowShortFunctionsOnASingleLine: InlineOnly
+AlignConsecutiveMacros: true
+IndentPPDirectives: AfterHash
+AlignConsecutiveAssignments: true
+AlignConsecutiveDeclarations: true
+QualifierAlignment: Right
+IncludeCategories:
+  - Regex: '^<catch2/catch_all.hpp>'
+    Priority: 10
+  - Regex: '^<Waggle/Config.hpp>'
+    Priority: 1
+  - Regex: '^<Waggle/.*\.h.*>'
+    Priority: 3
+  - Regex: '^<range/.*>'
+    Priority: 4
+  - Regex: '^<fmt/.*>'
+    Priority: 4
+  - Regex: '^<.*'
+    Priority: 5
+  - Regex: '.*'
+    Priority: 6
+
+# The namespace macros expand to namespace openers and closers, and WAGGLE_DEFINE_DOMAIN to a
+# declaration, none with a trailing semicolon, which clang-format cannot see through. Without
+# this it treats a bare macro call as a continuation of the previous line and indents what follows.
+StatementMacros:
+  - WAGGLE_NAMESPACE_BEGIN
+  - WAGGLE_NAMESPACE_END
+  - WAGGLE_DEFINE_DOMAIN

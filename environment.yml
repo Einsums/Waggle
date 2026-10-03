@@ -1,0 +1,13 @@
+name: waggle-dev
+channels:
+  - conda-forge
+dependencies:
+  - cmake>=3.24
+  - ninja
+  - cxx-compiler
+  - fmt>=12,<13
+  - catch2>=3
+  - python>=3.10
+  - pytest
+  - textual
+  - pre-commit
