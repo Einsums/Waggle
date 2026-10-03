@@ -317,9 +317,24 @@ APIARY_EXPOSE inline void publish(std::string const &type, std::string const &js
     waggle_publish(type.c_str(), json.data(), json.size());
 }
 
-/// Zones opened and closed so far, on every thread.
+/// Zones opened so far, on every thread, whether or not their events were dropped.
 APIARY_EXPOSE inline std::uint64_t total_push_count() {
     return waggle_total_push_count();
+}
+
+/// Zones closed so far, on every thread.
+APIARY_EXPOSE inline std::uint64_t total_pop_count() {
+    return waggle_total_pop_count();
+}
+
+/// What opening a recorded zone costs, in nanoseconds, measured once.
+APIARY_EXPOSE inline double push_overhead_ns() {
+    return waggle_push_overhead_ns();
+}
+
+/// What closing a recorded zone costs, in nanoseconds, measured once.
+APIARY_EXPOSE inline double pop_overhead_ns() {
+    return waggle_pop_overhead_ns();
 }
 
 /// The version of the C interface the loaded collector provides: (major, minor).

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -14,7 +15,12 @@ import threading
 
 import pytest
 
-core = pytest.importorskip("waggle._core", reason="waggle._core is not built (WAGGLE_BUILD_PYTHON=OFF)")
+if os.environ.get("WAGGLE_REQUIRE_CORE"):
+    # Built with WAGGLE_BUILD_PYTHON: a module that fails to load (a DLL not found) fails here
+    # rather than skipping every test quietly.
+    import waggle._core as core
+else:
+    core = pytest.importorskip("waggle._core", reason="waggle._core is not built (WAGGLE_BUILD_PYTHON=OFF)")
 
 import waggle  # noqa: E402
 
@@ -127,6 +133,15 @@ def test_settings_by_name():
     assert waggle.setting("max_distinct_children") == "100"
     assert waggle.setting("no such setting") is None
     assert waggle.configure({"no such setting": "1"}) == -1
+
+
+def test_counts_and_overheads():
+    pushes, pops = waggle.total_push_count(), waggle.total_pop_count()
+    with waggle.Zone("py: counted"):
+        pass
+    assert waggle.total_push_count() == pushes + 1
+    assert waggle.total_pop_count() == pops + 1
+    assert waggle.push_overhead_ns() >= 0.0 and waggle.pop_overhead_ns() >= 0.0
 
 
 def test_the_interface_version_is_the_headers():
