@@ -11,6 +11,7 @@
 
 #include "Detail/JsonEscape.hpp"
 #include "Diagnostics.hpp"
+#include "Sources.hpp"
 
 #ifndef _WIN32
 #    include <arpa/inet.h>
@@ -118,6 +119,17 @@ auto receive_text(socket_t fd, std::string &into) -> bool {
 auto const &escape_json_str = detail::json_escape;
 
 /// @p methods as a JSON array of strings.
+/// The optional sources built into the collector and their states, for a viewer to explain why
+/// one records nothing.
+std::string sources_json() {
+    std::string out = "[";
+    for (auto const &source : source_statuses()) {
+        out += fmt::format(R"({}{{"name":"{}","state":"{}","detail":"{}"}})", out.size() > 1 ? "," : "", escape_json_str(source.name),
+                           escape_json_str(source.state), escape_json_str(source.detail));
+    }
+    return out + "]";
+}
+
 std::string methods_json(std::vector<std::string> const &methods) {
     std::string out = "[";
     for (auto const &method : methods) {
@@ -577,6 +589,7 @@ void Server::send_snapshot_to(socket_t fd) {
         msg += ",\"duplicates\":" + duplicates_json(_handlers.duplicates());
         // What a viewer can ask this program, so it shows only the panels this program can fill.
         msg += ",\"handlers\":" + methods_json(_handlers.methods());
+        msg += ",\"sources\":" + sources_json();
     }
 
     auto &cb = get_counter_backend();
@@ -591,6 +604,7 @@ void Server::send_snapshot_to(socket_t fd) {
     // Snapshot line
     msg += R"({"type":"snapshot","seq":)" + std::to_string(++_seq);
     msg += ",\"handlers\":" + methods_json(_handlers.methods());
+    msg += ",\"sources\":" + sources_json();
     msg += ",\"dropped\":" + std::to_string(_consumer.dropped_count());
     msg += ",\"threads\":{";
     bool first_thread = true;
@@ -692,6 +706,7 @@ void Server::send_updates() {
     std::string msg;
     msg += R"({"type":"snapshot","seq":)" + std::to_string(++_seq);
     msg += ",\"handlers\":" + methods_json(_handlers.methods());
+    msg += ",\"sources\":" + sources_json();
     msg += ",\"dropped\":" + std::to_string(_consumer.dropped_count());
     msg += ",\"threads\":{";
     bool first_thread = true;

@@ -189,6 +189,8 @@ class ProfilerApp(App):
         self._name_filter = ""
         self._event = "Starting"
         self._disasm_target: tuple[str, str] | None = None
+        #: The source and collector problems already shown, per session.
+        self._warned: dict[str, set[str]] = {}
         #: The time the Gantt chart and the allocation track show; reset when the session changes.
         self._time = TimeWindow()
         #: The live connection each session came from, for requests to its server.
@@ -254,6 +256,7 @@ class ProfilerApp(App):
         sessions.active = f"session-{sid}"
         self._active = sid
         self._dirty.add(sid)
+        self._warn_once(session)
         return session
 
     async def load_file(self, path: str) -> list[Session]:
@@ -302,8 +305,19 @@ class ProfilerApp(App):
         self._refresh_panels()
         self._show_selected()
 
+    def _warn_once(self, session: Session) -> None:
+        """Say once per session what a source asked for, or a switched-off collector, costs it."""
+        if session.meta is None:
+            return
+        for problem in session.meta.source_problems():
+            if problem not in self._warned.setdefault(session.session_id, set()):
+                self._warned[session.session_id].add(problem)
+                self.notify(problem, severity="warning", timeout=10)
+
     def absorb(self, session: Session, state: StreamState, kind: str) -> None:
         """Copy what a message changed from the stream into its session."""
+        if kind == "snapshot":
+            self._warn_once(session)  # a source's state can change after the meta
         if kind == "snapshot" and state.snapshot is not None:
             session.record_snapshot(state.snapshot)
         elif kind == "timeline":
@@ -433,6 +447,13 @@ class ProfilerApp(App):
         parts = ["PAUSED" if self._paused else self._event]
         if session and session.meta and session.meta.pid:
             parts.append(f"PID {session.meta.pid}")
+        if session and session.meta:
+            for source in session.meta.sources:
+                state = source.get("state", "")
+                if state != "off":
+                    parts.append(f"{source.get('name', '?')} {'on' if state == 'active' else state}")
+            if session.meta.duplicates:
+                parts.append(f"{len(session.meta.duplicates)} collector(s) off")
         if session and session.snapshot and session.snapshot.dropped:
             parts.append(f"dropped={session.snapshot.dropped}")
         if session and session.baseline is not None:

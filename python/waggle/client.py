@@ -73,6 +73,9 @@ class StreamState:
             # first graph), so each snapshot repeats the list.
             if self.meta is not None and isinstance(msg.get("handlers"), list):
                 self.meta.handlers = list(msg["handlers"])
+            # Likewise a source's state: the runtime it instruments may start after the meta.
+            if self.meta is not None and isinstance(msg.get("sources"), list):
+                self.meta.sources = [s for s in msg["sources"] if isinstance(s, dict)]
         elif kind == "timeline":
             self.timeline = parse_timeline(msg)
         elif kind == "memory":

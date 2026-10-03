@@ -106,6 +106,22 @@ At exit, a program that never opened a zone writes no report.
 | `WAGGLE_SAVE` | save the session as JSON |
 | `WAGGLE_WAIT_FOR_VIEWER` | hold the program until a viewer connects |
 | `WAGGLE_MAX_DISTINCT_CHILDREN` | names a zone keeps before the rest fold into "(other)" |
+| `WAGGLE_DISABLE_DOMAINS` | libraries whose zones are not recorded, comma-separated |
+| `WAGGLE_SOURCES` | optional instruments to turn on, comma-separated (see below) |
+
+## Sources
+
+Sources are instruments that record zones nobody wrote, each off unless `WAGGLE_SOURCES` names it.
+Each records into a domain of its own, so switching that domain off mutes it while the program runs.
+The viewer and the report say why a source that was asked for records nothing.
+
+| Source | What it records |
+| --- | --- |
+| `openmp` | each parallel region, each thread's share of it, and the barrier waits inside, through OMPT |
+
+`openmp` needs an OpenMP runtime with OMPT: LLVM's libomp, which also runs GCC-compiled code, or Intel's; GCC's own libgomp has none.
+The runtime looks for a tool once, when it starts, so the source must be asked for before the program's first OpenMP call: in the environment, or by configuring Waggle first.
+A region is named after the function it is in; one that shares nothing with its function, last in it, can be compiled as a jump into the runtime and is then named after the function's caller.
 
 ## The viewer
 

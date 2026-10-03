@@ -16,6 +16,7 @@ set(_waggle_unit_tests
     Settings
     Sites
     Snapshot
+    Sources
     StringTable
 )
 
@@ -35,6 +36,29 @@ foreach(_name IN LISTS _waggle_unit_tests)
   # No report at exit: it would bury the test output.
   set_tests_properties(${WAGGLE_TEST_PREFIX}${_name} PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false" TIMEOUT 300)
 endforeach()
+
+# The OpenMP source against a runtime with OMPT: LLVM's libomp, which also serves GCC-compiled code
+# through its GOMP entry points. So the test compiles with the compiler's OpenMP flag but links
+# libomp itself, never GCC's libgomp, which has no OMPT. MSVC's runtime has none either.
+find_package(OpenMP COMPONENTS CXX)
+find_library(WAGGLE_LIBOMP NAMES omp libomp)
+if(OpenMP_CXX_FOUND AND WAGGLE_LIBOMP AND NOT MSVC)
+  add_executable(waggle_Ompt_test unit/Ompt.cpp)
+  separate_arguments(_waggle_omp_flags NATIVE_COMMAND "${OpenMP_CXX_FLAGS}")
+  target_compile_options(waggle_Ompt_test PRIVATE ${_waggle_omp_flags})
+  target_include_directories(waggle_Ompt_test PRIVATE ${OpenMP_CXX_INCLUDE_DIRS})
+  target_link_libraries(waggle_Ompt_test PRIVATE Waggle::internal Catch2::Catch2WithMain ${WAGGLE_LIBOMP})
+  add_dependencies(waggle_tests waggle_Ompt_test)
+  add_test(NAME ${WAGGLE_TEST_PREFIX}Ompt COMMAND waggle_Ompt_test "[active]")
+  set_tests_properties(${WAGGLE_TEST_PREFIX}Ompt PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false;WAGGLE_SOURCES=openmp" TIMEOUT 300)
+  add_test(NAME ${WAGGLE_TEST_PREFIX}OmptMissed COMMAND waggle_Ompt_test "[missed]")
+  set_tests_properties(${WAGGLE_TEST_PREFIX}OmptMissed PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false" TIMEOUT 300)
+elseif(WAGGLE_REQUIRE_OMPT_TEST)
+  # CI asks for the test, so a missing runtime fails there rather than leaving it unbuilt.
+  message(FATAL_ERROR "The OpenMP source's test needs OpenMP and LLVM's libomp (found OpenMP: ${OpenMP_CXX_FOUND}, libomp: ${WAGGLE_LIBOMP})")
+else()
+  message(STATUS "Waggle: the OpenMP source's test needs OpenMP and LLVM's libomp; not built")
+endif()
 
 # The C interface from C: the header must compile as strict C, without the C++ layer.
 enable_language(C)

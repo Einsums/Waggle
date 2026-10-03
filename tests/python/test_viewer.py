@@ -290,6 +290,18 @@ def test_meta_carries_the_programs_handlers_and_clients():
     assert parse_meta(dict(META) | {"handlers": []}).handlers == []
 
 
+def test_meta_says_why_a_requested_source_records_nothing():
+    state = StreamState()
+    state.apply(dict(META) | {"sources": [{"name": "openmp", "state": "off", "detail": ""}]})
+    assert state.meta.source_problems() == []
+    # The runtime starts after the viewer connected: the snapshot carries the new state.
+    state.apply(snapshot_msg() | {"sources": [{"name": "openmp", "state": "missed", "detail": "set WAGGLE_SOURCES=openmp"}]})
+    assert state.meta.source_problems() == ["Source openmp is missed: set WAGGLE_SOURCES=openmp"]
+    state.apply(dict(META) | {"duplicates": [{"path": "/opt/libwaggle.so", "abi": "0.1"}]})
+    assert "/opt/libwaggle.so" in state.meta.source_problems()[0]
+    assert parse_meta(meta_to_dict(state.meta)) == state.meta
+
+
 def test_a_handler_registered_after_connecting_reaches_the_viewer():
     # ComputeGraph registers get_compute_graphs on its first graph, often after the viewer
     # connected; the meta message is sent once, so snapshots repeat the list.

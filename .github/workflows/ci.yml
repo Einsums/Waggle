@@ -51,7 +51,7 @@ jobs:
           test -S /run/avahi-daemon/socket
 
       - name: Configure
-        run: cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DWAGGLE_BUILD_TESTS=ON -DWAGGLE_BUILD_PYTHON=ON
+        run: cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DWAGGLE_BUILD_TESTS=ON -DWAGGLE_BUILD_PYTHON=ON -DWAGGLE_REQUIRE_OMPT_TEST=ON
 
       - name: Build
         run: cmake --build build --target all waggle_tests

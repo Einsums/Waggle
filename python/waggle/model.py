@@ -96,6 +96,23 @@ class ProfileMeta:
     handlers: list[str] | None = None
     #: The libraries using the profiler, each a dict of name, version and build.
     clients: list[dict[str, Any]] = field(default_factory=list)
+    #: The collector's optional instruments, each a dict of name, state and detail: "off", "active",
+    #: or why one that was asked for records nothing ("waiting", "missed", "unavailable").
+    sources: list[dict[str, str]] = field(default_factory=list)
+    #: Copies of the collector that switched themselves off, each a dict of path and abi: the
+    #: zones of the libraries that loaded them are missing.
+    duplicates: list[dict[str, str]] = field(default_factory=list)
+
+    def source_problems(self) -> list[str]:
+        """What a person should know about sources asked for that record nothing, and about
+        collectors switched off."""
+        out = [
+            f"Source {s.get('name', '?')} is {s.get('state', '?')}: {s.get('detail', '')}"
+            for s in self.sources
+            if s.get("state") not in ("off", "active")
+        ]
+        out += [f"A second copy of the collector at {d.get('path', '?')} switched itself off; its libraries' zones are missing" for d in self.duplicates]
+        return out
 
     @property
     def label(self) -> str:
@@ -299,6 +316,8 @@ def parse_meta(data: dict[str, Any]) -> ProfileMeta:
         counters=list(data.get("counters") or []),
         handlers=list(data["handlers"]) if isinstance(data.get("handlers"), list) else None,
         clients=[c for c in data.get("clients") or [] if isinstance(c, dict)],
+        sources=[s for s in data.get("sources") or [] if isinstance(s, dict)],
+        duplicates=[d for d in data.get("duplicates") or [] if isinstance(d, dict)],
     )
 
 
@@ -385,4 +404,6 @@ def meta_to_dict(meta: ProfileMeta) -> dict[str, Any]:
         "build_type": meta.build_type,
         "counters": meta.counters,
         "clients": meta.clients,
+        "sources": meta.sources,
+        "duplicates": meta.duplicates,
     } | ({"handlers": meta.handlers} if meta.handlers is not None else {})

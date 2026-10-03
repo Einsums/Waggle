@@ -21,6 +21,7 @@
 #include "Detail/JsonEscape.hpp"
 #include "Diagnostics.hpp"
 #include "Profiler.hpp"
+#include "Sources.hpp"
 
 #if defined(_WIN32)
 #    include <io.h>
@@ -502,6 +503,13 @@ void Profiler::print(bool detailed, std::ostream &os) {
         styled_line(os, fmt::emphasis::bold | fg(fmt::color::yellow),
                     "Not recorded: zones of the libraries using a second copy of Waggle, {} (interface {}.{})", d.path, d.abi_major,
                     d.abi_minor);
+    }
+    // A source asked for that records nothing says why, where its zones would have been.
+    for (auto const &source : source_statuses()) {
+        if (source.state != "off" && source.state != "active") {
+            styled_line(os, fmt::emphasis::bold | fg(fmt::color::yellow), "Not recorded: source {} is {}: {}", source.name, source.state,
+                        source.detail);
+        }
     }
 
     for (auto const &tkv : thread_map) {

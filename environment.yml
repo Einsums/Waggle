@@ -9,6 +9,8 @@ dependencies:
   - catch2>=3
   - python>=3.10
   - pybind11
+  # LLVM's OpenMP runtime, which has OMPT, for the OpenMP source's test
+  - llvm-openmp
   # apiary generates waggle._core from python/src/Core.hpp
   - apiary >=1.1,<2
   - pytest
