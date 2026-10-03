@@ -56,23 +56,61 @@ constexpr int kSendFlags = 0;
 #endif
 
 #ifndef _WIN32
-void set_nonblocking(int fd) {
+void set_nonblocking(socket_t fd) {
     int const flags = fcntl(fd, F_GETFL, 0);
     if (flags >= 0)
         fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
-void close_socket(int fd) {
+void close_socket(socket_t fd) {
     ::close(fd);
 }
+
+/// Send @p msg, best effort: whether any of it went.
+auto send_text(socket_t fd, std::string_view msg) -> bool {
+    return ::send(fd, msg.data(), msg.size(), kSendFlags) > 0;
+}
+
+/// Receive what has arrived without waiting (the sockets are non-blocking), appending it to
+/// @p into; whether anything came.
+auto receive_text(socket_t fd, std::string &into) -> bool {
+    char       buf[4096]; // NOLINT(modernize-avoid-c-arrays)
+    auto const n = ::recv(fd, buf, sizeof(buf), 0);
+    if (n > 0) {
+        into.append(buf, static_cast<size_t>(n));
+    }
+    return n > 0;
+}
 #else
-void set_nonblocking(SOCKET fd) {
+/// Winsock, started once for the process and never stopped, as the server may run until exit.
+auto start_winsock() -> bool {
+    static bool const started = [] {
+        WSADATA data{};
+        return WSAStartup(MAKEWORD(2, 2), &data) == 0;
+    }();
+    return started;
+}
+
+void set_nonblocking(socket_t fd) {
     u_long mode = 1;
     ioctlsocket(fd, FIONBIO, &mode);
 }
 
-void close_socket(SOCKET fd) {
+void close_socket(socket_t fd) {
     closesocket(fd);
+}
+
+auto send_text(socket_t fd, std::string_view msg) -> bool {
+    return ::send(fd, msg.data(), static_cast<int>(msg.size()), kSendFlags) > 0;
+}
+
+auto receive_text(socket_t fd, std::string &into) -> bool {
+    char       buf[4096]; // NOLINT(modernize-avoid-c-arrays)
+    auto const n = ::recv(fd, buf, static_cast<int>(sizeof(buf)), 0);
+    if (n > 0) {
+        into.append(buf, static_cast<size_t>(n));
+    }
+    return n > 0;
 }
 #endif
 
@@ -210,15 +248,26 @@ auto ns_to_ms(ns t) -> double {
 
 Server::Server(Consumer &consumer, StringTable &strings, RequestHandlers const &handlers, std::string const &bind_addr, uint16_t port)
     : _consumer(consumer), _strings(strings), _handlers(handlers) {
-#ifndef _WIN32
+#ifdef _WIN32
+    if (!start_winsock()) {
+        diagnostic(DiagnosticLevel::Warning, "Profile server: failed to start Winsock");
+        return;
+    }
+#endif
     _listen_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (_listen_fd < 0) {
+    if (_listen_fd == kNoSocket) {
         diagnostic(DiagnosticLevel::Warning, "Profile server: failed to create socket");
         return;
     }
 
     int opt = 1;
+#ifdef _WIN32
+    // SO_REUSEADDR on Windows lets a bind take a port in use, which would defeat the search for a
+    // free one below; claim the port exclusively instead.
+    setsockopt(_listen_fd, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<char const *>(&opt), sizeof(opt));
+#else
     setsockopt(_listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+#endif
     set_nonblocking(_listen_fd);
 
     struct sockaddr_in addr{};
@@ -244,14 +293,14 @@ Server::Server(Consumer &consumer, StringTable &strings, RequestHandlers const &
         diagnostic(DiagnosticLevel::Warning,
                    fmt::format("Profile server: failed to bind to {}:{}-{}", bind_addr, port, port + kMaxPortAttempts - 1));
         close_socket(_listen_fd);
-        _listen_fd = -1;
+        _listen_fd = kNoSocket;
         return;
     }
 
     if (listen(_listen_fd, 4) < 0) {
         diagnostic(DiagnosticLevel::Warning, "Profile server: failed to listen");
         close_socket(_listen_fd);
-        _listen_fd = -1;
+        _listen_fd = kNoSocket;
         return;
     }
 
@@ -259,10 +308,6 @@ Server::Server(Consumer &consumer, StringTable &strings, RequestHandlers const &
     diagnostic(DiagnosticLevel::Info, fmt::format("Profile server listening on {}:{}", bind_addr, bound_port));
 
     register_mdns(bound_port);
-#else
-    diagnostic(DiagnosticLevel::Warning,
-               fmt::format("Profile server: not supported on Windows; {}:{} will not be served", bind_addr, port));
-#endif
 }
 
 auto Server::has_client() const -> bool {
@@ -318,21 +363,21 @@ void Server::shutdown(bool viewer_requested) {
 
     unregister_mdns();
 
-    for (int const fd : _client_fds) {
+    for (socket_t const fd : _client_fds) {
         close_socket(fd);
     }
     _client_fds.clear();
     _has_client.store(false, std::memory_order_relaxed);
 
-    if (_listen_fd >= 0) {
+    if (_listen_fd != kNoSocket) {
         close_socket(_listen_fd);
-        _listen_fd = -1;
+        _listen_fd = kNoSocket;
     }
     _bound_port = 0;
 }
 
 void Server::tick() {
-    if (_listen_fd < 0)
+    if (_listen_fd == kNoSocket)
         return;
 
     accept_clients();
@@ -341,19 +386,18 @@ void Server::tick() {
 }
 
 void Server::accept_clients() {
-#ifndef _WIN32
     while (static_cast<int>(_client_fds.size()) < kMaxClients) {
         struct sockaddr_in addr{};
         socklen_t          len = sizeof(addr);
-        int                fd  = accept(_listen_fd, reinterpret_cast<struct sockaddr *>(&addr), &len);
-        if (fd < 0)
+        socket_t const     fd  = accept(_listen_fd, reinterpret_cast<struct sockaddr *>(&addr), &len);
+        if (fd == kNoSocket)
             break; // no pending connections
 
         set_nonblocking(fd);
-#    ifdef __APPLE__
+#ifdef __APPLE__
         int val = 1;
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &val, sizeof(val));
-#    endif
+#endif
         _client_fds.push_back(fd);
         _has_client.store(true, std::memory_order_relaxed);
         diagnostic(DiagnosticLevel::Info, fmt::format("Profile server: client connected (fd={})", fd));
@@ -361,7 +405,6 @@ void Server::accept_clients() {
         // Send initial snapshot
         send_snapshot_to(fd);
     }
-#endif
 }
 
 void Server::write_node_json(std::string &out, AggNode const &n) { // NOLINT
@@ -500,7 +543,7 @@ void Server::write_node_json(std::string &out, AggNode const &n) { // NOLINT
     out += "}";
 }
 
-void Server::send_snapshot_to(int fd) {
+void Server::send_snapshot_to(socket_t fd) {
     auto        lock       = _consumer.lock_shared();
     auto const &thread_map = _consumer.thread_data();
 
@@ -586,10 +629,8 @@ void Server::send_snapshot_to(int fd) {
         msg += R"(,"message":")" + escape_json_str(entry.message) + "\"}\n";
     }
 
-#ifndef _WIN32
     // Best-effort send; drop if client can't keep up
-    ::send(fd, msg.data(), msg.size(), kSendFlags);
-#endif
+    send_text(fd, msg);
 }
 
 void Server::write_timeline_json(std::string &out) {
@@ -674,17 +715,14 @@ void Server::send_updates() {
     }
 
     // Send to all clients, remove disconnected ones
-    std::vector<int> alive;
-    for (int fd : _client_fds) {
-#ifndef _WIN32
-        ssize_t const sent = ::send(fd, msg.data(), msg.size(), kSendFlags);
-        if (sent > 0) {
+    std::vector<socket_t> alive;
+    for (socket_t const fd : _client_fds) {
+        if (send_text(fd, msg)) {
             alive.push_back(fd);
         } else {
             diagnostic(DiagnosticLevel::Info, fmt::format("Profile server: client disconnected (fd={})", fd));
             close_socket(fd);
         }
-#endif
     }
     _client_fds = std::move(alive);
     _has_client.store(!_client_fds.empty(), std::memory_order_relaxed);
@@ -711,13 +749,8 @@ void Server::publish(std::string_view type, std::string_view json_object) {
 }
 
 void Server::recv_requests() {
-#ifndef _WIN32
-    for (int const fd : _client_fds) {
-        // NOLINTNEXTLINE(modernize-avoid-c-arrays)
-        char          buf[4096];
-        ssize_t const n = ::recv(fd, buf, sizeof(buf), MSG_DONTWAIT);
-        if (n > 0) {
-            _recv_buffers[fd].append(buf, static_cast<size_t>(n));
+    for (socket_t const fd : _client_fds) {
+        if (receive_text(fd, _recv_buffers[fd])) {
             // Process complete lines
             auto &rb = _recv_buffers[fd];
             while (true) {
@@ -735,7 +768,7 @@ void Server::recv_requests() {
     // Clean up recv buffers for disconnected clients
     for (auto it = _recv_buffers.begin(); it != _recv_buffers.end();) {
         bool found = false;
-        for (int const fd : _client_fds) {
+        for (socket_t const fd : _client_fds) {
             if (fd == it->first) {
                 found = true;
                 break;
@@ -747,11 +780,9 @@ void Server::recv_requests() {
             ++it;
         }
     }
-#endif
 }
 
-void Server::process_request(int fd, std::string const &line) {
-#ifndef _WIN32
+void Server::process_request(socket_t fd, std::string const &line) {
     // Requests are {"type":"request","id":"...","method":"...","params":{...}}, parsed by string
     // extraction (no JSON library).
 
@@ -845,11 +876,7 @@ void Server::process_request(int fd, std::string const &line) {
         response = R"({"type":"response","id":")" + escape_json_str(req_id) + "\",\"data\":{\"error\":\"unknown method\"}}\n";
     }
 
-    ::send(fd, response.data(), response.size(), kSendFlags);
-#else
-    (void)fd;
-    (void)line;
-#endif
+    send_text(fd, response);
 }
 
 void Server::register_mdns(uint16_t port) {

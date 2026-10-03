@@ -16,31 +16,7 @@
 
 #include <cstdint>
 
-#ifndef _WIN32
-#    include <arpa/inet.h>
-#    include <netinet/in.h>
-#    include <sys/socket.h>
-#    include <unistd.h>
-#endif
-
-namespace {
-
-#ifndef _WIN32
-/// A port nothing is listening on (the kernel's pick).
-std::int64_t free_port() {
-    int const   fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    sockaddr_in addr{};
-    addr.sin_family      = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    socklen_t  len       = sizeof(addr);
-    bool const ok        = ::bind(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) == 0 &&
-                           ::getsockname(fd, reinterpret_cast<sockaddr *>(&addr), &len) == 0;
-    ::close(fd);
-    return ok ? ntohs(addr.sin_port) : 0;
-}
-#endif
-
-} // namespace
+#include "Sockets.hpp"
 
 int main() {
     // The profiler is built here, before anything it reports through has been used.
@@ -49,12 +25,10 @@ int main() {
         WAGGLE_ZONE("exit: before the server");
     }
 
-#ifndef _WIN32
     // A running server, so the destructor shuts one down and reports doing so.
-    if (auto const port = free_port(); port != 0) {
+    if (auto const port = waggle_test::free_port(); port != 0) {
         waggle::configure({.server = true, .port = port});
     }
-#endif
     // The first diagnostic of the run, after the profiler was built: a refused setting.
     waggle::configure({.max_distinct_children = 3});
     waggle::configure({.max_distinct_children = 4});

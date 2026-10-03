@@ -11,7 +11,6 @@
 
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
-#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -29,83 +28,44 @@
 #include "StringTable.hpp"
 
 #ifndef _WIN32
-#    include <arpa/inet.h>
 #    include <csignal>
-#    include <netinet/in.h>
-#    include <sys/ioctl.h>
-#    include <sys/socket.h>
-#    include <unistd.h>
-#    ifdef __linux__
-#        include <linux/sockios.h>
-#    endif
 #endif
 
-using namespace waggle;
+#include "Sockets.hpp"
 
-#ifndef _WIN32
+using namespace waggle;
+using waggle_test::connect_to;
+using waggle_test::free_port;
+using waggle_test::receive;
+
 namespace {
 
-/// A port nothing is listening on (the kernel's pick; the Server takes no port 0).
-uint16_t free_port() {
-    int const   fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    sockaddr_in addr{};
-    addr.sin_family      = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    ::bind(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr));
-    socklen_t len = sizeof(addr);
-    ::getsockname(fd, reinterpret_cast<sockaddr *>(&addr), &len);
-    ::close(fd);
-    return ntohs(addr.sin_port);
+using test_socket = waggle_test::socket_t;
+
+void close_client(test_socket fd) {
+    waggle_test::close_socket(fd);
 }
 
-int connect_to(uint16_t port) {
-    int const   fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    sockaddr_in addr{};
-    addr.sin_family      = AF_INET;
-    addr.sin_port        = htons(port);
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    REQUIRE(::connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) == 0);
-    return fd;
+void wait_until_queued(test_socket fd) {
+    REQUIRE(waggle_test::wait_until_queued(fd));
 }
 
-/// Bytes sent on `fd` that the peer's kernel has not yet acknowledged.
-int unacknowledged_bytes(int fd) {
-    int n = 0;
-#    ifdef __APPLE__
-    socklen_t len = sizeof(n);
-    REQUIRE(::getsockopt(fd, SOL_SOCKET, SO_NWRITE, &n, &len) == 0);
-#    else
-    REQUIRE(::ioctl(fd, SIOCOUTQ, &n) == 0);
-#    endif
-    return n;
-}
-
-/// Returns once the server's kernel holds the connection in its listen backlog. connect() returns
-/// when the client has the SYN-ACK, which can be before the server has processed the final ACK
-/// (macOS hands loopback input to a separate thread), and until then accept() finds nothing. A
-/// byte the server's kernel acknowledged arrived after that ACK, so it proves the connection is
-/// queued, and the kernel acknowledges it without anyone calling accept().
-void wait_until_queued(int fd) {
-    REQUIRE(::send(fd, "\n", 1, 0) == 1); // an empty request line, which the server skips
-    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (unacknowledged_bytes(fd) > 0) {
-        REQUIRE(std::chrono::steady_clock::now() < deadline);
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+/// Everything @p fd receives until the server closes it.
+std::string receive_all(test_socket fd) {
+    std::string received;
+    while (receive(fd, received) > 0) {
     }
+    return received;
 }
 
 /// Send one request line and return the response to it, waiting up to 10 s for the consumer's next
 /// tick (every ~500 ms) to answer. Snapshot and other lines streamed meanwhile are skipped.
-std::string request(int fd, std::string const &method) {
+std::string request(test_socket fd, std::string const &method) {
     std::string const line = R"({"type":"request","id":"t1","method":")" + method + R"(","params":{}})" + "\n";
-    REQUIRE(::send(fd, line.data(), line.size(), 0) == static_cast<ssize_t>(line.size()));
-
-    timeval timeout{};
-    timeout.tv_sec = 10;
-    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    REQUIRE(waggle_test::send_all(fd, line));
+    waggle_test::set_receive_timeout(fd, 10);
 
     std::string received;
-    char        buffer[4096];
     while (true) {
         for (size_t start = 0, end; (end = received.find('\n', start)) != std::string::npos; start = end + 1) {
             std::string const record = received.substr(start, end - start);
@@ -113,9 +73,7 @@ std::string request(int fd, std::string const &method) {
                 return record;
             }
         }
-        ssize_t const n = ::recv(fd, buffer, sizeof(buffer), 0);
-        REQUIRE(n > 0); // a timeout or a closed connection fails here
-        received.append(buffer, static_cast<size_t>(n));
+        REQUIRE(receive(fd, received) > 0); // a timeout or a closed connection fails here
     }
 }
 
@@ -133,13 +91,14 @@ TEST_CASE("A handler registered before the server starts is answered", "[profile
     REQUIRE(prof.server() != nullptr);
     REQUIRE(prof.server()->is_running());
 
-    int const         client   = connect_to(prof.server()->port());
+    test_socket const client = connect_to(prof.server()->port());
+    REQUIRE(client != waggle_test::kNoSocket);
     std::string const response = request(client, "test_early_handler");
     CHECK(response.find(R"("data":{"answer":42})") != std::string::npos);
 
     prof.unregister_handler("test_early_handler");
     CHECK(request(client, "test_early_handler").find("unknown method") != std::string::npos);
-    ::close(client);
+    close_client(client);
 }
 
 TEST_CASE("A published message reaches a connected viewer with its type", "[profiler][server]") {
@@ -154,16 +113,13 @@ TEST_CASE("A published message reaches a connected viewer with its type", "[prof
     server.publish("test_event", R"({"value":7,"label":"x"})");
     server.publish("test_empty", "{}");
 
-    int const client = connect_to(port);
+    test_socket const client = connect_to(port);
+    REQUIRE(client != waggle_test::kNoSocket);
     wait_until_queued(client);
     server.shutdown();
 
-    std::string received;
-    char        buffer[4096];
-    for (ssize_t n; (n = ::recv(client, buffer, sizeof(buffer), 0)) > 0;) {
-        received.append(buffer, static_cast<size_t>(n));
-    }
-    ::close(client);
+    std::string const received = receive_all(client);
+    close_client(client);
 
     INFO("received: " << received);
     CHECK(received.find(R"({"type":"test_event","value":7,"label":"x"})") != std::string::npos);
@@ -199,11 +155,7 @@ TEST_CASE("A session file embeds every registered section", "[profiler][server]"
 /// Reads a server's JSON Lines stream, keeping what arrived past the line it returned.
 class LineReader {
   public:
-    explicit LineReader(int fd) : _fd(fd) {
-        timeval timeout{};
-        timeout.tv_sec = 1;
-        ::setsockopt(_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-    }
+    explicit LineReader(test_socket fd) : _fd(fd) { waggle_test::set_receive_timeout(_fd, 1); }
 
     /// The next line holding every string in @p wanted, skipping others; fails after 10 s. The
     /// deadline is overall, since a server streaming snapshots never lets a per-recv timeout expire.
@@ -218,21 +170,16 @@ class LineReader {
                 }
             }
             REQUIRE(std::chrono::steady_clock::now() < deadline);
-            char          chunk[4096];
-            ssize_t const n = ::recv(_fd, chunk, sizeof(chunk), 0);
-            if (n > 0) {
-                _buffer.append(chunk, static_cast<size_t>(n));
-            } else {
-                REQUIRE((n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))); // a timeout, not a closed connection
-            }
+            REQUIRE(receive(_fd, _buffer) != 0); // a closed connection fails; a timeout reads again
         }
     }
 
   private:
-    int         _fd;
+    test_socket _fd;
     std::string _buffer;
 };
 
+#ifndef _WIN32
 // A send to a viewer that has disconnected raised SIGPIPE on Linux, which ends a program that has
 // not chosen to ignore it; Einsums ignored it, so only a program without Einsums died. macOS sets
 // SO_NOSIGPIPE per socket and never showed it.
@@ -250,10 +197,11 @@ TEST_CASE("A viewer that disconnects does not end the program", "[profiler][serv
     Server          server(consumer, strings, handlers, "127.0.0.1", port);
     REQUIRE(server.is_running());
 
-    int const gone = connect_to(port);
+    test_socket const gone = connect_to(port);
+    REQUIRE(gone != waggle_test::kNoSocket);
     wait_until_queued(gone);
     server.tick(); // accepts the viewer and sends it the meta line
-    ::close(gone);
+    close_client(gone);
 
     // Keep sending to the closed socket: the first sends may land before the peer's reset does.
     for (int i = 0; i < 50; ++i) {
@@ -263,14 +211,16 @@ TEST_CASE("A viewer that disconnects does not end the program", "[profiler][serv
     }
 
     // Still serving: a new viewer is accepted and answered.
-    int const client = connect_to(port);
+    test_socket const client = connect_to(port);
+    REQUIRE(client != waggle_test::kNoSocket);
     wait_until_queued(client);
     server.tick();
     LineReader reader(client);
     CHECK(reader.next({R"("type":"meta")"}).find(R"("type":"meta")") != std::string::npos);
-    ::close(client);
+    close_client(client);
     server.shutdown();
 }
+#endif
 
 TEST_CASE("The meta message lists every client and every switched-off collector", "[profiler][server]") {
     StringTable     strings;
@@ -287,7 +237,8 @@ TEST_CASE("The meta message lists every client and every switched-off collector"
     REQUIRE(server.is_running());
     CHECK(server.port() == port);
 
-    int const client = connect_to(port);
+    test_socket const client = connect_to(port);
+    REQUIRE(client != waggle_test::kNoSocket);
     wait_until_queued(client);
     server.tick(); // accepts the viewer and sends it the meta line
 
@@ -301,7 +252,7 @@ TEST_CASE("The meta message lists every client and every switched-off collector"
     CHECK(meta.find(R"("handlers":["alpha_method","zeta_method"])") != std::string::npos);
     // Copies of the collector that switched themselves off: their libraries' zones are missing.
     CHECK(meta.find(R"("duplicates":[{"path":"/opt/lib/libwaggle.0.dylib","abi":"0.1"}])") != std::string::npos);
-    ::close(client);
+    close_client(client);
     server.shutdown();
 }
 
@@ -314,7 +265,8 @@ TEST_CASE("Log messages and program output reach a server started later", "[prof
     REQUIRE(prof.server() != nullptr);
     REQUIRE(prof.server()->is_running());
 
-    int const client = connect_to(prof.server()->port());
+    test_socket const client = connect_to(prof.server()->port());
+    REQUIRE(client != waggle_test::kNoSocket);
     // Messages go to the viewers connected when the server next ticks, so wait until the consumer's
     // tick has accepted this one: its meta line says so.
     LineReader reader(client);
@@ -327,7 +279,7 @@ TEST_CASE("Log messages and program output reach a server started later", "[prof
     CHECK(log.find(R"("file":"source.cpp")") != std::string::npos); // the basename
     CHECK(log.find(R"("line":42)") != std::string::npos);
     CHECK_FALSE(reader.next({R"("type":"output")", "late-server output line"}).empty());
-    ::close(client);
+    close_client(client);
 }
 
 // Regression: shutdown() drained only to clients the server had already accepted, so one still
@@ -345,30 +297,15 @@ TEST_CASE("Server shutdown delivers queued results to a client it has not yet ac
 
     server.publish("benchmark_result", R"({"label":"short-test N=8","metric":"t_einsum","value_us":12.5})");
 
-    int const client = connect_to(port); // connected, but no tick() has run to accept it
+    test_socket const client = connect_to(port); // connected, but no tick() has run to accept it
+    REQUIRE(client != waggle_test::kNoSocket);
     wait_until_queued(client);
     server.shutdown();
 
-    std::string received;
-    char        buffer[4096];
-    for (ssize_t n; (n = ::recv(client, buffer, sizeof(buffer), 0)) > 0;) {
-        received.append(buffer, static_cast<size_t>(n));
-    }
-    ::close(client);
+    std::string const received = receive_all(client);
+    close_client(client);
 
     INFO("received: " << received);
     REQUIRE(received.find(R"("type":"benchmark_result")") != std::string::npos);
     REQUIRE(received.find(R"("label":"short-test N=8")") != std::string::npos);
 }
-#else
-// Placeholder: the server has no Winsock implementation, so it never listens on Windows. Once it
-// does, the POSIX case above (with Winsock socket calls in its helpers) replaces this one.
-TEST_CASE("Server does not listen on Windows", "[profiler][server]") {
-    StringTable     strings;
-    SiteTable       sites;
-    Consumer        consumer(strings, sites);
-    RequestHandlers handlers;
-    Server          server(consumer, strings, handlers, "127.0.0.1", 19216);
-    REQUIRE_FALSE(server.is_running());
-}
-#endif

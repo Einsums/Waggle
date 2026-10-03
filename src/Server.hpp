@@ -27,6 +27,15 @@
 
 WAGGLE_NAMESPACE_BEGIN
 
+/// A socket: Winsock's SOCKET, a pointer-sized handle, on Windows, a file descriptor elsewhere.
+#ifdef _WIN32
+using socket_t                      = std::uintptr_t;
+inline constexpr socket_t kNoSocket = ~socket_t{0}; // INVALID_SOCKET
+#else
+using socket_t                      = int;
+inline constexpr socket_t kNoSocket = -1;
+#endif
+
 /// TCP server that streams profiling data as JSON Lines to connected clients.
 /// Binds to localhost by default, accepts up to 4 simultaneous clients.
 /// On macOS, advertises via Bonjour/mDNS as "_waggle._tcp".
@@ -58,7 +67,7 @@ class WAGGLE_EXPORT Server {
     [[nodiscard]] auto port() const -> uint16_t { return _bound_port; }
 
     /// Whether the server is active.
-    [[nodiscard]] auto is_running() const -> bool { return _listen_fd >= 0; }
+    [[nodiscard]] auto is_running() const -> bool { return _listen_fd != kNoSocket; }
 
     /// Whether a viewer is connected. Lock-free and callable from any thread; every ComputeGraph
     /// destruction asks.
@@ -92,7 +101,7 @@ class WAGGLE_EXPORT Server {
 
   private:
     void accept_clients();
-    void send_snapshot_to(int fd);
+    void send_snapshot_to(socket_t fd);
     void send_updates();
     void write_node_json(std::string &out, AggNode const &n);
     void write_timeline_json(std::string &out);
@@ -101,17 +110,17 @@ class WAGGLE_EXPORT Server {
     void unregister_mdns();
 
     void recv_requests();
-    void process_request(int fd, std::string const &line);
+    void process_request(socket_t fd, std::string const &line);
 
     Consumer    &_consumer;
     StringTable &_strings;
 
-    int      _listen_fd  = -1;
+    socket_t _listen_fd  = kNoSocket;
     uint16_t _bound_port = 0;
 
     /// Connected viewers. Owned by the thread driving tick(): the consumer thread, then the main
     /// thread in shutdown() after the consumer is joined. Other threads use _has_client.
-    std::vector<int> _client_fds;
+    std::vector<socket_t> _client_fds;
 
     /// `!_client_fds.empty()`, republished after every change. May be a tick stale, which only
     /// affects a caching decision.
@@ -121,7 +130,7 @@ class WAGGLE_EXPORT Server {
     static constexpr int kMaxClients = 4;
 
     /// Per-client receive buffer for incoming requests.
-    std::unordered_map<int, std::string> _recv_buffers;
+    std::unordered_map<socket_t, std::string> _recv_buffers;
 
     RequestHandlers const &_handlers;
 

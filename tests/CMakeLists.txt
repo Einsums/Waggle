@@ -26,6 +26,9 @@ foreach(_name IN LISTS _waggle_unit_tests)
   add_executable(${_target} unit/${_name}.cpp)
   # Waggle::internal: the tests reach the collector's private headers.
   target_link_libraries(${_target} PRIVATE Waggle::internal Catch2::Catch2WithMain)
+  if(WIN32)
+    target_link_libraries(${_target} PRIVATE ws2_32) # Sockets.hpp
+  endif()
   add_dependencies(waggle_tests ${_target})
 
   add_test(NAME ${WAGGLE_TEST_PREFIX}${_name} COMMAND ${_target})
@@ -48,6 +51,9 @@ set_tests_properties(${WAGGLE_TEST_PREFIX}CApi PROPERTIES ENVIRONMENT "WAGGLE_RE
 # A plain program, not a Catch2 case: what it checks happens after main returns.
 add_executable(waggle_ExitWithoutFinalize_test unit/ExitWithoutFinalize.cpp)
 target_link_libraries(waggle_ExitWithoutFinalize_test PRIVATE Waggle::waggle)
+if(WIN32)
+  target_link_libraries(waggle_ExitWithoutFinalize_test PRIVATE ws2_32) # Sockets.hpp
+endif()
 add_dependencies(waggle_tests waggle_ExitWithoutFinalize_test)
 # It also asks, through the environment, for the outputs a finalize would write; they must be
 # written at exit all the same. Old ones are removed first, and checked once the program has ended.
@@ -85,14 +91,11 @@ add_test(NAME ${WAGGLE_TEST_PREFIX}ExitWithoutZonesNoReport COMMAND ${CMAKE_COMM
 )
 set_tests_properties(${WAGGLE_TEST_PREFIX}ExitWithoutZonesNoReport PROPERTIES FIXTURES_REQUIRED waggle_unused_ran)
 
-if(NOT WIN32)
-  # The session file is the server's, which does not run on Windows.
-  add_test(NAME ${WAGGLE_TEST_PREFIX}ExitWithoutFinalizeSession
-           COMMAND ${CMAKE_COMMAND} -DFILE=${_exit_session} "-DEXPECT=exit: left for the drain" -P
-                   ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_contains.cmake
-  )
-  set_tests_properties(${WAGGLE_TEST_PREFIX}ExitWithoutFinalizeSession PROPERTIES FIXTURES_REQUIRED waggle_exit_outputs)
-endif()
+add_test(NAME ${WAGGLE_TEST_PREFIX}ExitWithoutFinalizeSession
+         COMMAND ${CMAKE_COMMAND} -DFILE=${_exit_session} "-DEXPECT=exit: left for the drain" -P
+                 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_contains.cmake
+)
+set_tests_properties(${WAGGLE_TEST_PREFIX}ExitWithoutFinalizeSession PROPERTIES FIXTURES_REQUIRED waggle_exit_outputs)
 
 # A second, separately built copy of the collector, for the test that loads two at once. Its sources
 # and settings are the collector's own; only the file differs.
@@ -141,3 +144,19 @@ endif()
 add_executable(waggle_ZoneCost_benchmark EXCLUDE_FROM_ALL performance/ZoneCost.cpp)
 target_link_libraries(waggle_ZoneCost_benchmark PRIVATE Waggle::internal Catch2::Catch2WithMain)
 add_custom_target(waggle_benchmarks DEPENDS waggle_ZoneCost_benchmark)
+
+# Windows has no run path: each test finds waggle.dll through PATH.
+if(WIN32)
+  get_property(
+    _waggle_tests
+    DIRECTORY
+    PROPERTY TESTS
+  )
+  foreach(_test IN LISTS _waggle_tests)
+    set_property(
+      TEST ${_test}
+      APPEND
+      PROPERTY ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:waggle>"
+    )
+  endforeach()
+endif()

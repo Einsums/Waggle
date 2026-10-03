@@ -20,13 +20,7 @@
 
 #include "Diagnostics.hpp"
 #include "Profiler.hpp"
-
-#ifndef _WIN32
-#    include <arpa/inet.h>
-#    include <netinet/in.h>
-#    include <sys/socket.h>
-#    include <unistd.h>
-#endif
+#include "Sockets.hpp"
 
 using namespace waggle;
 
@@ -189,26 +183,17 @@ TEST_CASE("A refused setting is reported through the diagnostic handler", "[prof
     CHECK(seen.front().second.find("second-library.json") != std::string::npos);
 }
 
-#ifndef _WIN32
 // waggle::configure crosses the C interface. It once sent each setting in its own call, so turning
 // the server on started it on the default port before the port given beside it arrived.
 TEST_CASE("The server starts on the port set in the same update", "[profiler][settings]") {
     // Nothing else in this executable starts the server, which starts only once per process.
     REQUIRE_FALSE(waggle::server_running());
 
-    int const   fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    sockaddr_in addr{};
-    addr.sin_family      = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    ::bind(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr));
-    socklen_t len = sizeof(addr);
-    ::getsockname(fd, reinterpret_cast<sockaddr *>(&addr), &len);
-    ::close(fd);
-    auto const port = static_cast<std::int64_t>(ntohs(addr.sin_port));
+    auto const port = static_cast<std::int64_t>(waggle_test::free_port());
+    REQUIRE(port != 0);
 
     waggle::override_settings({.server = true, .port = port});
     REQUIRE(waggle::server_running());
     CHECK(waggle::server_port() == port);
     CHECK(waggle::settings().port == port);
 }
-#endif
