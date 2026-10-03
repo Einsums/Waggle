@@ -42,8 +42,10 @@ static AggNode const *find_node_any_thread(std::unordered_map<uint32_t, ThreadSt
 }
 
 // Wait for consumer to drain events (polls up to ~200ms)
+/// Drain every thread's ring into the trees before reading them. It used to sleep 50 ms and hope
+/// the consumer thread had drained by then, which a loaded CI machine did not always manage.
 static void wait_for_drain() {
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    Profiler::instance().flush();
 }
 
 TEST_CASE("Profiler push/pop produces aggregated tree", "[profiler][consumer]") {
