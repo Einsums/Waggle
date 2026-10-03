@@ -32,6 +32,7 @@ jobs:
         # apiary parses with libclang, which on Linux finds stddef.h and the rest only in clang's
         # resource directory; the build compiles with GCC, so it has none. The version is apiary's
         # LLVM: another version's headers use builtins its libclang does not have.
+        # Remove once apiary's package brings them (Einsums/Apiary#4).
         if: runner.os == 'Linux'
         run: conda install -y -c conda-forge "clang 23.*"
 
