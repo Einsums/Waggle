@@ -514,17 +514,15 @@ void Consumer::process_mem(ThreadState &ts, Event const &evt, uint32_t thread_id
     }
     _memory_next = (_memory_next + 1) % kMaxMemorySamples;
     // Only an allocation with an address can be matched to its free.
-    if (evt.mem.address != 0) {
-        if (alloc) {
-            if (_live.size() < kMaxLiveAllocations) {
-                uint32_t const name_id = !ts.stack.empty() ? ts.stack.back().name_id : 0;
-                _live[evt.mem.address] = {.bytes = evt.mem.bytes, .t_ms = t_ms, .thread_id = thread_id, .name_id = name_id};
-            } else {
-                ++_untracked_allocations;
-            }
+    if (alloc) {
+        if (evt.mem.address != 0 && _live.size() < kMaxLiveAllocations) {
+            uint32_t const name_id = !ts.stack.empty() ? ts.stack.back().name_id : 0;
+            _live[evt.mem.address] = {.bytes = evt.mem.bytes, .t_ms = t_ms, .thread_id = thread_id, .name_id = name_id};
         } else {
-            _live.erase(evt.mem.address);
+            ++_untracked_allocations;
         }
+    } else if (evt.mem.address != 0) {
+        _live.erase(evt.mem.address);
     }
 
     if (ts.stack.empty())

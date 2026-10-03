@@ -398,11 +398,12 @@ TEST_CASE("The allocation track follows allocations and frees", "[profiler][cons
     prof.set_enabled(true);
     std::array<char, 3> blocks{}; // three distinct addresses
 
-    uint64_t before = 0;
+    uint64_t before = 0, untracked_before = 0;
     {
         wait_for_drain();
-        auto lock = prof.consumer()->lock_shared();
-        before    = prof.consumer()->memory_seq();
+        auto lock        = prof.consumer()->lock_shared();
+        before           = prof.consumer()->memory_seq();
+        untracked_before = prof.consumer()->untracked_allocations();
     }
     std::thread([&] {
         WAGGLE_ZONE("memory track zone");
@@ -410,16 +411,19 @@ TEST_CASE("The allocation track follows allocations and frees", "[profiler][cons
         WAGGLE_MEM_ALLOC_AT(&blocks[1], 3000);
         WAGGLE_MEM_ALLOC_AT(&blocks[2], 2000);
         WAGGLE_MEM_FREE_AT(&blocks[1], 3000);
+        WAGGLE_MEM_ALLOC(8); // on the curve, but with no address to list it by
+        WAGGLE_MEM_FREE(8);
     }).join();
     wait_for_drain();
 
     auto        lock     = prof.consumer()->lock_shared();
     auto const *consumer = prof.consumer();
     auto const  samples  = consumer->memory_samples(before);
-    REQUIRE(samples.size() == 4);
+    REQUIRE(samples.size() == 6);
+    CHECK(consumer->untracked_allocations() - untracked_before == 1);
     CHECK(samples[1].live_bytes - samples[0].live_bytes == 3000);
     CHECK(samples[3].live_bytes - samples[2].live_bytes == -3000);
-    CHECK(samples[3].seq == consumer->memory_seq());
+    CHECK(samples[5].seq == consumer->memory_seq());
     CHECK(consumer->memory_samples(consumer->memory_seq()).empty());
 
     // Largest first; the freed one is gone.

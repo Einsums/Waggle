@@ -659,11 +659,15 @@ void Server::write_timeline_json(std::string &out) {
 void Server::write_memory_json(std::string &out, uint64_t after) {
     auto const samples = _consumer.memory_samples(after);
     auto const live    = _consumer.live_allocations(kLiveAllocationsShown);
-    if (samples.empty() && live.empty() && after != 0) {
+    // The live list changes only with a sample, so an update with none has nothing to say.
+    if (samples.empty() && after != 0) {
         return;
     }
     out += R"({"type":"memory","live_bytes":)" + std::to_string(_consumer.live_bytes());
     out += ",\"untracked\":" + std::to_string(_consumer.untracked_allocations());
+    // The last sample's sequence number: samples are consecutive, so a viewer that already has some
+    // of them (the snapshot on connect and the next update can overlap) drops the repeats.
+    out += ",\"seq\":" + std::to_string(_consumer.memory_seq());
     out += ",\"samples\":[";
     for (size_t i = 0; i < samples.size(); ++i) {
         out += fmt::format("{}[{:.3f},{}]", i > 0 ? "," : "", samples[i].t_ms, samples[i].live_bytes);

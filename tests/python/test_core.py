@@ -195,3 +195,56 @@ def test_the_module_has_no_collector_of_its_own():
     defined = subprocess.run(["nm", *defined_only, path], capture_output=True, text=True, check=True).stdout
     collector = [line for line in defined.splitlines() if " waggle_" in line or " _waggle_" in line]
     assert collector == [], collector
+
+
+def test_the_viewer_reads_a_programs_allocation_track(tmp_path):
+    # End to end: a program records allocations, its server streams them, and the viewer's client
+    # parses what the server wrote.
+    import asyncio
+    import socket
+
+    from waggle.client import ProfileClient
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    script = (
+        "import sys, waggle\n"
+        "with waggle.Zone('py: allocate'):\n"
+        "    waggle.mem_alloc(4096, 0xABC000)\n"
+        "    waggle.mem_alloc(64, 0xDEF000)\n"
+        "    waggle.mem_free(64, 0xDEF000)\n"
+        "    waggle.mem_alloc(16)\n"
+        "waggle.flush()\n"
+        "print('ready', flush=True)\n"
+        "sys.stdin.read()\n"
+    )
+    env = dict(os.environ, WAGGLE_SERVER="1", WAGGLE_PORT=str(port), WAGGLE_REPORT="0")
+    program = subprocess.Popen([sys.executable, "-c", script], env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    try:
+        assert program.stdout.readline().strip() == "ready"
+
+        async def read_track():
+            client = ProfileClient("127.0.0.1", port)
+            assert await client.connect(timeout=10.0)
+            # Once the program is idle, updates stop carrying a memory message: one comes only
+            # with new samples (the first update may repeat a few the connect already sent).
+            empty_updates, snapshots = 0, 0
+            async for msg in client.messages():
+                kind = client.state.apply(msg)
+                if kind == "memory" and not msg["samples"]:
+                    empty_updates += 1
+                snapshots += kind == "snapshot"
+                if snapshots == 4:
+                    break
+            await client.close()
+            return client.state.memory, empty_updates
+
+        track, empty_updates = asyncio.run(asyncio.wait_for(read_track(), 30.0))
+        assert empty_updates == 0
+        assert [b for _, b in track.samples] == [4096, 4160, 4096, 4112]
+        assert (track.live_bytes, track.untracked, track.seq) == (4112, 1, 4)
+        assert [(a.address, a.bytes, a.zone) for a in track.live] == [("0xabc000", 4096, "py: allocate")]
+    finally:
+        program.stdin.close()
+        program.wait(timeout=60)

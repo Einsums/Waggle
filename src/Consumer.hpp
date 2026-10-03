@@ -258,11 +258,13 @@ class WAGGLE_EXPORT Consumer {
     /// The @p count largest allocations still live, largest first. Caller must hold the shared lock.
     auto live_allocations(size_t count) const -> std::vector<LiveAllocation>;
 
-    /// The process's live tracked bytes now, and how many allocations the live table could not
-    /// take (it holds at most kMaxLiveAllocations). Caller must hold the shared lock.
+    /// The process's live tracked bytes now. Caller must hold the shared lock.
     auto live_bytes() const -> int64_t { return _live_bytes; }
     /// The sequence number of the latest sample. Caller must hold the shared lock.
     auto memory_seq() const -> uint64_t { return _memory_seq; }
+    /// Allocations on the curve that the live table never held: those recorded without an
+    /// address, and those that came while it was full (it holds kMaxLiveAllocations). Caller
+    /// must hold the shared lock.
     auto untracked_allocations() const -> uint64_t { return _untracked_allocations; }
 
     /// The samples the allocation track keeps, and the allocations its live table holds.

@@ -201,17 +201,18 @@ APIARY_EXPOSE inline void annotate(std::string const &key, double value) {
     }
 }
 
-/// Record an allocation of @p bytes in the innermost open zone.
-APIARY_EXPOSE inline void mem_alloc(std::int64_t bytes) {
+/// Record an allocation of @p bytes in the innermost open zone. Given the block's @p address, the
+/// allocation track lists it until a free at the same address.
+APIARY_EXPOSE inline void mem_alloc(std::int64_t bytes, std::uint64_t address = 0) {
     if (bytes != 0) {
-        waggle_mem_alloc(nullptr, bytes);
+        waggle_mem_alloc(reinterpret_cast<void const *>(static_cast<std::uintptr_t>(address)), bytes);
     }
 }
 
-/// Record a free of @p bytes in the innermost open zone.
-APIARY_EXPOSE inline void mem_free(std::int64_t bytes) {
+/// Record a free of @p bytes in the innermost open zone, at @p address if the allocation gave one.
+APIARY_EXPOSE inline void mem_free(std::int64_t bytes, std::uint64_t address = 0) {
     if (bytes != 0) {
-        waggle_mem_free(nullptr, bytes);
+        waggle_mem_free(reinterpret_cast<void const *>(static_cast<std::uintptr_t>(address)), bytes);
     }
 }
 
