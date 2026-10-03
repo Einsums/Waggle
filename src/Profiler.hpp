@@ -520,7 +520,8 @@ struct WAGGLE_EXPORT Profiler {
     /// inline: a plain int32_t is the one type the C interface can hand out. Mutable, as
     /// std::atomic_ref takes no const object, even to load.
     /// Never freed, as the domain switches are not: callers cache its address (waggle_enabled_flag).
-    int32_t &_enabled = *new (std::align_val_t{std::atomic_ref<int32_t>::required_alignment}) int32_t{1}; // NOLINT
+    static_assert(std::atomic_ref<int32_t>::required_alignment == alignof(int32_t), "a plain new is aligned for the switch");
+    int32_t &_enabled = *new int32_t{1}; // NOLINT(cppcoreguidelines-owning-memory)
 
     /// The settings and who set them; under @ref _settings_mutex.
     mutable std::mutex _settings_mutex;
