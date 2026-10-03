@@ -88,6 +88,22 @@ WAGGLE_NAMESPACE_BEGIN
 struct WAGGLE_EXPORT Profiler {
     static auto instance() -> Profiler &;
 
+    /// The profiler if it has been built, else null; never builds it.
+    static auto built() -> Profiler * { return s_built.load(std::memory_order_acquire); }
+
+    /// The process is exiting (waggle_at_exit): what the last finalize does, unless one already
+    /// did it.
+    void at_exit() {
+        {
+            std::scoped_lock const lock(_lifecycle_mutex);
+            if (_finalized) {
+                return;
+            }
+            _finalized = true;
+        }
+        finish(true);
+    }
+
     /// Whether zones and annotations are recorded. When off, each entry point costs one relaxed load.
     [[nodiscard]] bool enabled() const { return std::atomic_ref<int32_t>(_enabled).load(std::memory_order_relaxed) != 0; }
     void               set_enabled(bool on) { std::atomic_ref<int32_t>(_enabled).store(on ? 1 : 0, std::memory_order_relaxed); }
@@ -330,6 +346,10 @@ struct WAGGLE_EXPORT Profiler {
     /// at exit. The consumer must stop before members are destroyed, as its tick calls into
     /// _server, which is destroyed first; finish() does that.
     ~Profiler() {
+        // From here waggle_at_exit finds no profiler. Where the program's exit handlers run after
+        // the collector's statics are destroyed (macOS and Linux keep one list for both), this
+        // destructor does what the hook would have; on Windows the hook runs first.
+        s_built.store(nullptr, std::memory_order_release);
         bool unfinished = false;
         {
             std::scoped_lock const lock(_lifecycle_mutex);
@@ -459,6 +479,9 @@ struct WAGGLE_EXPORT Profiler {
     /// Serializes @ref init and @ref finalize; the clients themselves are in @ref _handlers.
     std::mutex _lifecycle_mutex;
     bool       _finalized{false};
+
+    /// Set as the constructor finishes, for @ref built.
+    static inline std::atomic<Profiler *> s_built{nullptr};
 
     /// Every thread's channel, for the life of the process; see @ref ThreadChannel.
     mutable std::mutex                          _channels_mutex;

@@ -163,6 +163,7 @@ Profiler::Profiler() : _consumer(std::make_unique<Consumer>(_strings, _sites)) {
         s = _settings.current();
     }
     apply(s);
+    s_built.store(this, std::memory_order_release);
 }
 
 void Profiler::apply(Settings const &s) {

@@ -118,6 +118,14 @@ WAGGLE_C_EXPORT void waggle_init(char const *name, char const *version, char con
  * session file and report the settings ask for and stops recording for the process. */
 WAGGLE_C_EXPORT void waggle_finalize(char const *name);
 
+/* The process is exiting: write the outputs the settings ask for and stop recording, unless the
+ * last waggle_finalize already did. Safe to call more than once, and does nothing if nothing in the
+ * process used the profiler. Waggle's C++ header registers it with atexit in every module that
+ * includes it, and waggle._core with Python's atexit; a C program registers it itself,
+ * atexit(waggle_at_exit). Without it the outputs are written as the collector unloads, which on
+ * Windows comes after the process's other threads have been stopped, too late to rely on. */
+WAGGLE_C_EXPORT void waggle_at_exit(void);
+
 /* Drain every thread's recorded events into the aggregated trees. */
 WAGGLE_C_EXPORT void waggle_flush(void);
 

@@ -287,6 +287,16 @@ void waggle_finalize(char const *name) {
     profiler().finalize(std::string(view(name)));
 }
 
+void waggle_at_exit(void) {
+    if (waggle::collector_inactive()) {
+        return;
+    }
+    // Not active(): exiting is no reason to build a profiler nothing used.
+    if (Profiler *const p = Profiler::built()) {
+        p->at_exit();
+    }
+}
+
 void waggle_flush(void) {
     if (waggle::collector_inactive()) {
         return;

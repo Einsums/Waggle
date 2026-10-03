@@ -251,6 +251,12 @@ APIARY_EXPOSE inline void finalize(std::string const &name) {
     waggle_finalize(name.c_str());
 }
 
+/// The process is exiting: write the outputs the settings ask for, unless a finalize already did.
+/// ``waggle`` registers it with Python's ``atexit`` when it first loads this module.
+APIARY_EXPOSE inline void at_exit() {
+    waggle_at_exit();
+}
+
 /// Drain every thread's recorded events into the aggregated trees.
 APIARY_EXPOSE inline void flush() {
     waggle_flush();

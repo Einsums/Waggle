@@ -44,8 +44,13 @@ def _core() -> Any:
     """The compiled module, imported on first use; ImportError if it was not built."""
     global _core_module
     if _core_module is None:
+        import atexit
+
         from . import _core as core
 
+        # Write the outputs while the interpreter's threads still run: the collector's own unload
+        # comes after them, and on Windows after every other thread has been stopped.
+        atexit.register(core.at_exit)
         _core_module = core
     return _core_module
 

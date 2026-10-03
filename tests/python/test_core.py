@@ -149,6 +149,17 @@ def test_the_interface_version_is_the_headers():
     assert (major, minor) == (0, 1)
 
 
+def test_a_python_program_that_never_finalizes_still_gets_its_report(tmp_path):
+    # waggle registers waggle_at_exit with Python's atexit, so the report is written while the
+    # interpreter's threads still run, not at the collector's unload, which on Windows comes after
+    # every other thread has been stopped.
+    report = tmp_path / "report.txt"
+    script = "import waggle\nwith waggle.Zone('py: at exit'):\n    pass\n"
+    env = dict(os.environ, WAGGLE_REPORT="true", WAGGLE_REPORT_FILE=str(report))
+    subprocess.run([sys.executable, "-c", script], env=env, check=True, timeout=120)
+    assert "py: at exit" in report.read_text()
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="checks ELF and Mach-O linkage")
 def test_the_module_has_no_collector_of_its_own():
     # One collector per process: the module reaches libwaggle's and defines none of it.
