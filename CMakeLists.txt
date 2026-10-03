@@ -42,6 +42,9 @@ add_library(
 add_library(Waggle::waggle ALIAS waggle)
 
 target_compile_features(waggle PUBLIC cxx_std_20)
+# The zone macros use __VA_OPT__, which MSVC's traditional preprocessor does not know: every
+# translation unit that includes the headers needs the conforming one.
+target_compile_options(waggle PUBLIC $<$<CXX_COMPILER_ID:MSVC>:/Zc:preprocessor>)
 target_include_directories(
   waggle
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
