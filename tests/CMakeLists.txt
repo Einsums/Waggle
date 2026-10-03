@@ -131,8 +131,10 @@ if(Python3_Interpreter_FOUND)
   )
   if(_waggle_no_pytest EQUAL 0)
     # With waggle._core built, the staged package, which has it; otherwise the sources.
+    set(_waggle_python_test_env "")
     if(WAGGLE_BUILD_PYTHON)
       set(_waggle_test_python_path "${_waggle_python_dir}")
+      set(_waggle_python_test_env ";WAGGLE_REQUIRE_CORE=1")
     else()
       set(_waggle_test_python_path "${PROJECT_SOURCE_DIR}/python")
     endif()
@@ -140,7 +142,7 @@ if(Python3_Interpreter_FOUND)
                                                             ${CMAKE_CURRENT_SOURCE_DIR}/python
     )
     set_tests_properties(
-      ${WAGGLE_TEST_PREFIX}ViewerPython PROPERTIES ENVIRONMENT "PYTHONPATH=${_waggle_test_python_path}" LABELS PYTHON TIMEOUT 600
+      ${WAGGLE_TEST_PREFIX}ViewerPython PROPERTIES ENVIRONMENT "PYTHONPATH=${_waggle_test_python_path}${_waggle_python_test_env}" LABELS PYTHON TIMEOUT 600
     )
   else()
     message(STATUS "Waggle: pytest not found; the viewer's tests are not registered")
