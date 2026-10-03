@@ -63,6 +63,11 @@ TEST_CASE("XNU gives a thread its own cycles and instructions, without root", "[
     bool                      opened = false;
     auto const                delta  = count_work(backend, 1'000'000, opened);
     INFO(backend.why_not());
+    if (!opened && waggle::running_in_vm()) {
+        // CI's macOS runners are virtual machines; on real hardware a failure still fails.
+        CHECK(backend.why_not().find("virtual machine") != std::string::npos);
+        SKIP("a virtual machine has no performance counters");
+    }
     REQUIRE(opened);
     CHECK(backend.slot_name(0) == "cycles");
     CHECK(backend.slot_name(1) == "instructions");

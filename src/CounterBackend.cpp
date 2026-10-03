@@ -23,6 +23,7 @@
 #    include <unistd.h>
 #elif defined(__APPLE__)
 #    include <sys/syscall.h>
+#    include <sys/sysctl.h>
 #    include <unistd.h>
 #endif
 
@@ -164,10 +165,19 @@ auto self_counts(uint64_t (&out)[8]) -> bool { // NOLINT(modernize-avoid-c-array
 
 } // namespace
 
+auto running_in_vm() -> bool {
+    int    present = 0;
+    size_t size    = sizeof(present);
+    return sysctlbyname("kern.hv_vmm_present", &present, &size, nullptr, 0) == 0 && present != 0;
+}
+
 auto XnuCounterBackend::open(ThreadCounters &tc) -> bool {
     uint64_t probe[8]{}; // NOLINT(modernize-avoid-c-arrays)
     if (!self_counts(probe)) {
-        std::string why = fmt::format("this kernel does not give threads their cycle and instruction counts ({})", std::strerror(errno));
+        int const   error = errno;
+        std::string why   = running_in_vm() ? "this Mac is a virtual machine, which has no performance counters"
+                                            : fmt::format("this kernel does not give threads their cycle and instruction counts ({})",
+                                                          std::strerror(error));
         std::scoped_lock const lock(_mutex);
         _why_not = std::move(why);
         return false;

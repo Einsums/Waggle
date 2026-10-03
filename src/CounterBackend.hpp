@@ -117,6 +117,11 @@ class WAGGLE_EXPORT XnuCounterBackend : public CounterBackend {
 };
 #endif
 
+#ifdef __APPLE__
+/// Whether this Mac is a virtual machine, which gives its guests no performance counters.
+WAGGLE_EXPORT auto running_in_vm() -> bool;
+#endif
+
 /// The process's backend: Linux perf, XNU's thread counts, or none.
 WAGGLE_EXPORT auto get_counter_backend() -> CounterBackend &;
 
