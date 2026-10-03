@@ -123,6 +123,25 @@ The viewer and the report say why a source that was asked for records nothing.
 The runtime looks for a tool once, when it starts, so the source must be asked for before the program's first OpenMP call: in the environment, or by configuring Waggle first.
 A region is named after the function it is in; one that shares nothing with its function, last in it, can be compiled as a jump into the runtime and is then named after the function's caller.
 
+## Device work
+
+GPU work runs asynchronously, so a host zone around a launch times the launch, not the work.
+Device work is recorded once it is done, with the times the device measured, on a track per device queue, and named after the host zone that submitted it.
+It does not nest in the host's call tree; the viewer shows it as rows of its own on the timeline and as a table of time per name.
+
+From Objective-C++, `<Waggle/Metal.h>` records a Metal command buffer:
+
+```objc
+#include <Waggle/Metal.h>
+
+id<MTLCommandBuffer> buffer = [queue commandBuffer];
+[kernel encodeToCommandBuffer:buffer ...];
+WAGGLE_METAL_ZONE(buffer, "mps gemm"); // before commit
+[buffer commit];
+```
+
+Other devices use the C interface: `waggle_device_submit()` where the work is submitted, then `waggle_device_span()` with the device's times, converted to `waggle_steady_ns()`'s clock, once it is done.
+
 ## The viewer
 
 ```sh

@@ -626,6 +626,7 @@ void Server::send_snapshot_to(socket_t fd) {
 
     // The whole allocation track for a viewer that just connected.
     write_memory_json(msg, 0);
+    write_devices_json(msg);
 
     // Append any accumulated log messages so the initial snapshot includes them
     auto logs = _log_queue.drain();
@@ -661,11 +662,28 @@ void Server::write_timeline_json(std::string &out) {
         if (!first)
             out += ",";
         first = false;
-        out += "{\"tid\":" + std::to_string(te.thread_id);
+        // Device work names its track; a host zone, its thread.
+        out += te.track.empty() ? "{\"tid\":" + std::to_string(te.thread_id) : R"({"track":")" + escape_json_str(te.track) + "\"";
         out += R"(,"name":")" + escape_json_str(te.name) + "\"";
         out += ",\"start_ms\":" + std::to_string(te.start_ms);
         out += ",\"end_ms\":" + std::to_string(te.end_ms);
         out += "}";
+    }
+    out += "]}\n";
+}
+
+void Server::write_devices_json(std::string &out) {
+    auto const work = _consumer.device_work();
+    if (work.empty()) {
+        return;
+    }
+    out += R"({"type":"devices","work":[)";
+    for (size_t i = 0; i < work.size(); ++i) {
+        auto const &w = work[i];
+        out +=
+            fmt::format(R"({}{{"track":"{}","name":"{}","count":{},"total_ms":{:.6f},"min_ms":{:.6f},"max_ms":{:.6f},"submitter":"{}"}})",
+                        i > 0 ? "," : "", escape_json_str(w.track), escape_json_str(w.name), w.count, w.total_ms, w.min_ms, w.max_ms,
+                        escape_json_str(w.submitter));
     }
     out += "]}\n";
 }
@@ -732,6 +750,12 @@ void Server::send_updates() {
     // The allocation track: what is new since the last send.
     write_memory_json(msg, _memory_sent);
     _memory_sent = _consumer.memory_seq();
+
+    // Device work: the summary, when a span or a reset changed it.
+    if (_consumer.device_seq() != _devices_sent) {
+        write_devices_json(msg);
+        _devices_sent = _consumer.device_seq();
+    }
 
     // Append log messages
     auto logs = _log_queue.drain();
@@ -1026,6 +1050,12 @@ void Server::export_session(std::string const &path, std::string const &label,
     {
         std::string memory;
         write_memory_json(memory, 0);
+        std::string devices;
+        write_devices_json(devices);
+        if (!devices.empty()) {
+            devices.pop_back(); // its line break
+            json += ",\n  \"devices\": " + devices;
+        }
         if (!memory.empty()) {
             memory.pop_back(); // its line break; it sits inside the session object here
             json += ",\n  \"memory\": " + memory;

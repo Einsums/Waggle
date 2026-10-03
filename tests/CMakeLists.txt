@@ -9,6 +9,7 @@
 set(_waggle_unit_tests
     Annotations
     Consumer
+    DeviceSpans
     Domains
     Producer
     RingBuffer
@@ -58,6 +59,17 @@ elseif(WAGGLE_REQUIRE_OMPT_TEST)
   message(FATAL_ERROR "The OpenMP source's test needs OpenMP and LLVM's libomp (found OpenMP: ${OpenMP_CXX_FOUND}, libomp: ${WAGGLE_LIBOMP})")
 else()
   message(STATUS "Waggle: the OpenMP source's test needs OpenMP and LLVM's libomp; not built")
+endif()
+
+# Metal device zones on the machine's GPU; a runner without one skips.
+if(APPLE)
+  enable_language(OBJCXX)
+  add_executable(waggle_Metal_test unit/Metal.mm)
+  target_compile_options(waggle_Metal_test PRIVATE -fobjc-arc)
+  target_link_libraries(waggle_Metal_test PRIVATE Waggle::internal Catch2::Catch2WithMain "-framework Metal" "-framework Foundation")
+  add_dependencies(waggle_tests waggle_Metal_test)
+  add_test(NAME ${WAGGLE_TEST_PREFIX}Metal COMMAND waggle_Metal_test)
+  set_tests_properties(${WAGGLE_TEST_PREFIX}Metal PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false" TIMEOUT 300 SKIP_RETURN_CODE 4)
 endif()
 
 # The C interface from C: the header must compile as strict C, without the C++ layer.

@@ -266,6 +266,21 @@ void waggle_set_thread_name(char const *name, size_t length) {
     profiler().set_thread_name(std::string(name, length));
 }
 
+uint64_t waggle_device_submit(void) {
+    Profiler *const p = active();
+    return p != nullptr ? p->device_submit() : 0;
+}
+
+void waggle_device_span(uint32_t track, uint32_t site, uint32_t name_id, int64_t start_ns, int64_t end_ns, uint64_t token) {
+    if (Profiler *const p = active()) {
+        p->device_span(track, site, name_id, start_ns, end_ns, token);
+    }
+}
+
+int64_t waggle_steady_ns(void) {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 uint32_t waggle_current_thread_id(void) {
     if (unusable()) {
         return 0;

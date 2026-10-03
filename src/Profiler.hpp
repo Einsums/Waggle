@@ -323,6 +323,41 @@ struct WAGGLE_EXPORT Profiler {
         emit_event(evt);
     }
 
+    /// A token for device work submitted now, inside the calling thread's innermost zone; 0 when
+    /// not recording.
+    auto device_submit() -> uint64_t {
+        if (!enabled()) {
+            return 0;
+        }
+        Event evt{};
+        evt.type         = EventType::DeviceSubmit;
+        evt.ticks        = TickClock::now();
+        evt.device.token = _next_device_token.fetch_add(1, std::memory_order_relaxed);
+        emit_event(evt);
+        return evt.device.token;
+    }
+
+    /// Device work done: see waggle_device_span.
+    void device_span(uint32_t track, uint32_t site, uint32_t name_id, int64_t start_ns, int64_t end_ns, uint64_t token) {
+        if (!enabled()) {
+            return;
+        }
+        Event evt{};
+        evt.type            = EventType::DeviceSpan;
+        evt.ticks           = TickClock::now();
+        evt.site_id         = site;
+        evt.name_id         = name_id;
+        evt.device.start_ns = start_ns;
+        evt.device.end_ns   = end_ns;
+        evt.device.token    = token;
+        evt.device.track    = track;
+        // Not through emit_event: a span does not belong inside the recording thread's zones, so
+        // that thread's deferred push stays deferred.
+        auto &ch = thread_channel();
+        (void)ch.ring.try_push(evt);
+        wake_consumer_if_filling(ch);
+    }
+
     // Emit an event to the thread-local ring buffer. Used by annotation API.
     WAGGLE_FORCEINLINE void emit_event(Event const &evt) {
         auto &ch = thread_channel();
@@ -476,6 +511,9 @@ struct WAGGLE_EXPORT Profiler {
     std::mutex              _server_mutex;
     std::unique_ptr<Server> _server;
     std::atomic<Server *>   _server_ptr{nullptr};
+
+    /// The next device submission's token; 0 is none.
+    std::atomic<uint64_t> _next_device_token{1};
 
     /// Recording switch, from Settings::record.
     /// Read and written only through std::atomic_ref, here and by every library that checks it

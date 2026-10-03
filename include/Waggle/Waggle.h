@@ -103,6 +103,24 @@ WAGGLE_C_EXPORT void waggle_mem_free(void const *address, int64_t bytes);
 
 /* Name the calling thread in reports and viewers. */
 WAGGLE_C_EXPORT void waggle_set_thread_name(char const *name, size_t length);
+
+/* ---- Device work -------------------------------------------------------------------------- */
+
+/* Device work runs asynchronously, so a host zone around a launch times the launch, not the work.
+ * It is recorded as a span once done, with the times the device measured.
+ *
+ * Where the work is submitted, inside the host zone submitting it, take a token; 0 when not
+ * recording. */
+WAGGLE_C_EXPORT uint64_t waggle_device_submit(void);
+/* The work, done: `track` names the device queue it ran on (a string id from waggle_intern),
+ * `site` and `name_id` describe it as for a zone, and `start_ns` and `end_ns` are on the host's
+ * steady clock (waggle_steady_ns). `token` is its submission's, which names the host zone that
+ * submitted it, or 0. Any thread may record it, a completion callback typically. */
+WAGGLE_C_EXPORT void waggle_device_span(uint32_t track, uint32_t site, uint32_t name_id, int64_t start_ns, int64_t end_ns,
+                                        uint64_t token);
+/* Now on the clock device spans are given in: std::chrono::steady_clock, nanoseconds since its
+ * epoch. A device's own clock is converted by sampling both. */
+WAGGLE_C_EXPORT int64_t waggle_steady_ns(void);
 /* The calling thread's id, as reports and viewers show it. */
 WAGGLE_C_EXPORT uint32_t waggle_current_thread_id(void);
 

@@ -135,10 +135,23 @@ WAGGLE_EXPORT auto inclusive_time(AggNode const &node) -> ns;
 
 // ---------------------- Timeline event for Gantt chart ----------------------
 struct TimelineEvent {
-    uint32_t    thread_id;
+    uint32_t    thread_id; ///< the host thread; 0 for device work
     std::string name;
     double      start_ms; // relative to program start
     double      end_ms;
+    std::string track{}; ///< the device queue, for device work; empty for a host zone
+};
+
+/// Device work of one name on one track, summed.
+struct DeviceWork {
+    std::string track;
+    std::string name;
+    uint64_t    count{0};
+    double      total_ms{0.0};
+    double      min_ms{0.0};
+    double      max_ms{0.0};
+    /// The host zone that submitted most of it; empty when none was named or none was open.
+    std::string submitter;
 };
 
 // ---------------------- Allocation history for the allocation track ----------------------
@@ -244,9 +257,15 @@ class WAGGLE_EXPORT Consumer {
         _tick_callback = std::move(cb);
     }
 
-    /// The most recent zones for the Gantt chart, oldest first, with their names resolved. Caller must
-    /// hold the shared lock.
+    /// The most recent zones for the Gantt chart, oldest first, with their names resolved, and the
+    /// most recent device work after them. Caller must hold the shared lock.
     auto timeline_events() const -> std::vector<TimelineEvent>;
+
+    /// Device work by track and name, track by track. Caller must hold the shared lock.
+    auto device_work() const -> std::vector<DeviceWork>;
+    /// Counts device spans recorded, so a server sends the summary only when it changed. Caller
+    /// must hold the shared lock.
+    auto device_seq() const -> uint64_t { return _device_seq; }
 
     /// Maximum number of timeline events to keep.
     static constexpr size_t kMaxTimelineEvents = 1000;
@@ -350,6 +369,40 @@ class WAGGLE_EXPORT Consumer {
     };
     std::vector<TimelineRecord> _timeline;
     size_t                      _timeline_next{0};
+
+    /// Device work, under _tree_mutex: the last kMaxTimelineEvents spans for the Gantt chart, in a
+    /// ring of their own so host zones cannot crowd them out; the summary by track and name; the
+    /// innermost zone of each submission not yet matched to its span; and spans whose submission
+    /// has not been read yet, which another thread's ring may still hold.
+    struct DeviceRecord {
+        uint32_t track;
+        uint32_t name_id;
+        double   start_ms;
+        double   end_ms;
+    };
+    struct DeviceStats {
+        uint64_t                               count{0};
+        double                                 total_ms{0.0};
+        double                                 min_ms{0.0};
+        double                                 max_ms{0.0};
+        std::unordered_map<uint32_t, uint64_t> submitters; ///< zone name id -> spans
+    };
+    struct PendingSpan {
+        Event    event;
+        uint32_t passes; ///< drain passes it has waited
+    };
+    std::vector<DeviceRecord>                            _device_timeline;
+    size_t                                               _device_timeline_next{0};
+    std::map<std::pair<uint32_t, uint32_t>, DeviceStats> _device_stats; ///< by (track, name id)
+    std::unordered_map<uint64_t, uint32_t>               _submissions;  ///< token -> zone name id
+    std::vector<PendingSpan>                             _pending_spans;
+    uint64_t                                             _device_seq{0};
+    static constexpr size_t                              kMaxPendingSubmissions = 65536;
+
+    void process_device_span(Event const &evt, uint32_t submitter);
+    /// Match waiting spans to submissions read since; one that has waited a whole pass lost its
+    /// submission (a full ring dropped it) and is recorded without.
+    void resolve_device_spans();
 
     /// The allocation track, under _tree_mutex: a ring of the last kMaxMemorySamples samples written
     /// at _memory_next, the running total, and the allocations not yet freed, by address.

@@ -105,6 +105,8 @@ class WAGGLE_EXPORT Server {
 
     /// A ``memory`` line: the allocation track's samples after @p after, and the largest live
     /// allocations. Caller holds the consumer's shared lock.
+    /// The device work summary, a "devices" line; nothing when there is none.
+    void write_devices_json(std::string &out);
     void write_memory_json(std::string &out, uint64_t after);
 
     /// The largest live allocations a ``memory`` message lists.
@@ -132,8 +134,10 @@ class WAGGLE_EXPORT Server {
 
     uint64_t _seq = 0;
     /// The last allocation-track sample sent to the connected viewers.
-    uint64_t             _memory_sent = 0;
-    static constexpr int kMaxClients  = 4;
+    uint64_t _memory_sent = 0;
+    /// The consumer's device_seq when the device summary was last sent.
+    uint64_t             _devices_sent = 0;
+    static constexpr int kMaxClients   = 4;
 
     /// Per-client receive buffer for incoming requests.
     std::unordered_map<socket_t, std::string> _recv_buffers;

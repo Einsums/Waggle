@@ -63,14 +63,93 @@ auto Consumer::live_allocations(size_t count) const -> std::vector<LiveAllocatio
 
 auto Consumer::timeline_events() const -> std::vector<TimelineEvent> {
     std::vector<TimelineEvent> out;
-    out.reserve(_timeline.size());
+    out.reserve(_timeline.size() + _device_timeline.size());
     // Oldest first: once the ring has wrapped, the oldest record is the one about to be overwritten.
     size_t const start = _timeline.size() < kMaxTimelineEvents ? 0 : _timeline_next;
     for (size_t k = 0; k < _timeline.size(); ++k) {
         auto const &rec = _timeline[(start + k) % _timeline.size()];
         out.push_back({.thread_id = rec.thread_id, .name = _strings.get(rec.name_id), .start_ms = rec.start_ms, .end_ms = rec.end_ms});
     }
+    size_t const device_start = _device_timeline.size() < kMaxTimelineEvents ? 0 : _device_timeline_next;
+    for (size_t k = 0; k < _device_timeline.size(); ++k) {
+        auto const &rec = _device_timeline[(device_start + k) % _device_timeline.size()];
+        out.push_back({.thread_id = 0,
+                       .name      = _strings.get(rec.name_id),
+                       .start_ms  = rec.start_ms,
+                       .end_ms    = rec.end_ms,
+                       .track     = _strings.get(rec.track)});
+    }
     return out;
+}
+
+auto Consumer::device_work() const -> std::vector<DeviceWork> {
+    std::vector<DeviceWork> out;
+    out.reserve(_device_stats.size());
+    for (auto const &[key, stats] : _device_stats) {
+        uint32_t submitter = 0;
+        uint64_t most      = 0;
+        for (auto const &[name_id, n] : stats.submitters) {
+            if (n > most) {
+                submitter = name_id;
+                most      = n;
+            }
+        }
+        out.push_back({.track     = _strings.get(key.first),
+                       .name      = _strings.get(key.second),
+                       .count     = stats.count,
+                       .total_ms  = stats.total_ms,
+                       .min_ms    = stats.min_ms,
+                       .max_ms    = stats.max_ms,
+                       .submitter = submitter != 0 ? _strings.get(submitter) : std::string{}});
+    }
+    return out;
+}
+
+void Consumer::process_device_span(Event const &evt, uint32_t submitter) {
+    using ms         = std::chrono::duration<double, std::milli>;
+    auto const at_ms = [&](int64_t ns) {
+        return std::chrono::duration_cast<ms>(TimePoint(std::chrono::nanoseconds(ns)) - _program_start).count();
+    };
+    Site const     site    = _sites.get(evt.site_id);
+    uint32_t const name_id = evt.name_id != 0 ? evt.name_id : site.name_id;
+    double const   start   = at_ms(evt.device.start_ns);
+    double const   end     = std::max(start, at_ms(evt.device.end_ns));
+
+    DeviceRecord const rec{.track = evt.device.track, .name_id = name_id, .start_ms = start, .end_ms = end};
+    if (_device_timeline.size() < kMaxTimelineEvents) {
+        _device_timeline.push_back(rec);
+    } else {
+        _device_timeline[_device_timeline_next] = rec;
+    }
+    _device_timeline_next = (_device_timeline_next + 1) % kMaxTimelineEvents;
+
+    auto        &stats    = _device_stats[{evt.device.track, name_id}];
+    double const duration = end - start;
+    stats.min_ms          = stats.count == 0 ? duration : std::min(stats.min_ms, duration);
+    stats.max_ms          = std::max(stats.max_ms, duration);
+    stats.total_ms += duration;
+    ++stats.count;
+    if (submitter != 0) {
+        ++stats.submitters[submitter];
+    }
+    ++_device_seq;
+}
+
+void Consumer::resolve_device_spans() {
+    std::erase_if(_pending_spans, [&](PendingSpan &pending) {
+        if (auto it = _submissions.find(pending.event.device.token); it != _submissions.end()) {
+            process_device_span(pending.event, it->second);
+            _submissions.erase(it);
+            return true;
+        }
+        // A submission is written before its work can finish, so a whole pass later it has been
+        // read, or was dropped.
+        if (++pending.passes > 1) {
+            process_device_span(pending.event, 0);
+            return true;
+        }
+        return false;
+    });
 }
 
 void Consumer::register_thread(uint32_t thread_id, std::shared_ptr<EventRingBuffer> rb) {
@@ -87,9 +166,13 @@ auto Consumer::dropped_count() const -> uint64_t {
     return total;
 }
 
+// A name is kept apart from the thread's tree until the thread records into one: a thread that
+// only reports device work, a completion callback's, gets no empty tree in snapshots and viewers.
 void Consumer::set_thread_name(uint32_t thread_id, std::string name) {
     std::unique_lock const lock(_tree_mutex);
-    _threads[thread_id].name = name;
+    if (auto it = _threads.find(thread_id); it != _threads.end()) {
+        it->second.name = name;
+    }
     _thread_names[thread_id] = std::move(name);
 }
 
@@ -98,7 +181,9 @@ void Consumer::name_thread_if_unnamed(uint32_t thread_id, std::string name) {
     if (auto it = _thread_names.find(thread_id); it != _thread_names.end() && !it->second.empty()) {
         return;
     }
-    _threads[thread_id].name = name;
+    if (auto it = _threads.find(thread_id); it != _threads.end()) {
+        it->second.name = name;
+    }
     _thread_names[thread_id] = std::move(name);
 }
 
@@ -183,6 +268,12 @@ void Consumer::reset() {
     // The curve starts again; what is still allocated stays allocated.
     _memory.clear();
     _memory_next = 0;
+    // Device work is summed afresh too. Submissions and waiting spans stay: their work is still
+    // to be reported.
+    _device_timeline.clear();
+    _device_timeline_next = 0;
+    _device_stats.clear();
+    ++_device_seq;
 }
 
 void Consumer::consumer_loop() {
@@ -235,11 +326,32 @@ size_t Consumer::drain_all() {
     for (auto &reg : regs) {
         drained += reg.ring_buffer->drain([&](Event const &evt) { process_event(reg.thread_id, evt); });
     }
+    resolve_device_spans();
     return drained;
 }
 
 void Consumer::process_event(uint32_t thread_id, Event const &evt) {
-    auto &ts = _threads[thread_id];
+    // Device work belongs to no thread's tree: the thread recording it, a completion callback's
+    // typically, gets no entry for it.
+    if (evt.type == EventType::DeviceSpan) {
+        if (evt.device.token == 0) {
+            process_device_span(evt, 0);
+        } else if (auto it = _submissions.find(evt.device.token); it != _submissions.end()) {
+            process_device_span(evt, it->second);
+            _submissions.erase(it);
+        } else {
+            _pending_spans.push_back({.event = evt, .passes = 0});
+        }
+        return;
+    }
+
+    auto [entry, created] = _threads.try_emplace(thread_id);
+    auto &ts              = entry->second;
+    if (created) {
+        if (auto name = _thread_names.find(thread_id); name != _thread_names.end()) {
+            ts.name = name->second;
+        }
+    }
 
     switch (evt.type) {
     case EventType::Push:
@@ -258,6 +370,14 @@ void Consumer::process_event(uint32_t thread_id, Event const &evt) {
     case EventType::MemFree:
         process_mem(ts, evt, thread_id);
         break;
+    case EventType::DeviceSubmit:
+        if (_submissions.size() >= kMaxPendingSubmissions) {
+            _submissions.clear(); // spans that never came; theirs would be named after nothing anyway
+        }
+        _submissions[evt.device.token] = ts.stack.empty() ? 0 : ts.stack.back().name_id;
+        break;
+    case EventType::DeviceSpan:
+        break; // handled above
     case EventType::Zone: {
         // Its Push and its Pop, as they would have arrived.
         Event push{};

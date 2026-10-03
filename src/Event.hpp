@@ -27,6 +27,12 @@ enum class EventType : uint8_t {
     /// A zone that opened and closed with nothing recorded inside it: its Push and Pop in one
     /// event, @ref Event::ticks its start and @c zone.end_ticks its end.
     Zone,
+    /// Device work submitted inside the thread's innermost zone: @c device.token, for the
+    /// DeviceSpan that reports it to name that zone.
+    DeviceSubmit,
+    /// Device work done, recorded by whichever thread learned of it: @ref Event::site_id and
+    /// @c name_id describe it, @c device its track, times and submission token.
+    DeviceSpan,
 };
 
 /// Which member of an @ref AnnotationPayload's value an annotation filled.
@@ -51,7 +57,7 @@ struct AnnotationPayload {
  * @brief One record in a thread's ring buffer, exactly one cache line.
  *
  * Each event type uses one arm of the trailing union: Push and Pop the hardware counters, Annotate
- * the annotation, MemAlloc and MemFree the byte count, Zone its end.
+ * the annotation, MemAlloc and MemFree the byte count, Zone its end, the device events the work.
  */
 struct alignas(64) Event {
     /// Raw @ref TickClock ticks; the consumer converts them with TickClock::to_time_point.
@@ -85,6 +91,14 @@ struct alignas(64) Event {
         struct {
             uint64_t end_ticks;
         } zone;
+        /// For DeviceSubmit and DeviceSpan. Times are on the host's steady clock, in nanoseconds
+        /// since its epoch, as the device's own clock was converted by whoever measured them.
+        struct {
+            int64_t  start_ns;
+            int64_t  end_ns;
+            uint64_t token; ///< pairs a span with its submission; 0 for none
+            uint32_t track; ///< the device queue it ran on, a string id
+        } device;
     };
 };
 
