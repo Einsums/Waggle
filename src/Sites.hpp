@@ -7,6 +7,7 @@
 
 #include <Waggle/Config.hpp>
 
+#include <atomic>
 #include <cstdint>
 #include <deque>
 #include <map>
@@ -79,7 +80,11 @@ class SiteTable {
  */
 class DomainTable {
   public:
-    DomainTable() { _names.emplace_back(); }
+    DomainTable() {
+        _names.emplace_back();
+        _wanted.emplace_back(true);
+        _switches.emplace_back(1);
+    }
 
     /// The id of the domain named @p name, registering it if new; "" is domain 0. Thread-safe.
     auto add(std::string_view name) -> uint32_t {
@@ -92,8 +97,44 @@ class DomainTable {
         }
         auto const id = static_cast<uint32_t>(_names.size());
         _names.emplace_back(name);
+        _wanted.emplace_back(true);
+        _switches.emplace_back(_global ? 1 : 0);
         _ids.emplace(std::string(name), id);
         return id;
+    }
+
+    /// Domain @p id's recording switch, 1 when the domain and the global switch are both on, at an
+    /// address fixed for the life of the table: sites cache it and read it, one relaxed
+    /// std::atomic_ref load, in place of reading the two. Domain 0's for an id this table never
+    /// issued. Thread-safe.
+    [[nodiscard]] auto switch_of(uint32_t id) const -> std::int32_t const * {
+        std::scoped_lock const lock(_mutex);
+        return &_switches[id < _switches.size() ? id : 0];
+    }
+
+    /// Turn domain @p id's recording on or off; an id this table never issued is ignored.
+    void set_enabled(uint32_t id, bool on) {
+        std::scoped_lock const lock(_mutex);
+        if (id >= _switches.size()) {
+            return;
+        }
+        _wanted[id] = on;
+        store(_switches[id], _global && on);
+    }
+
+    /// The global switch changed: every domain's switch follows. Rare, so it may touch them all.
+    void set_global(bool on) {
+        std::scoped_lock const lock(_mutex);
+        _global = on;
+        for (size_t id = 0; id < _switches.size(); ++id) {
+            store(_switches[id], on && _wanted[id]);
+        }
+    }
+
+    /// Whether domain @p id is switched on, its own switch alone, whatever the global one says.
+    [[nodiscard]] auto enabled(uint32_t id) const -> bool {
+        std::scoped_lock const lock(_mutex);
+        return id < _wanted.size() ? _wanted[id] : _wanted[0];
     }
 
     /// The name of domain @p id; "" for domain 0 or an id this table never issued. Thread-safe.
@@ -103,8 +144,16 @@ class DomainTable {
     }
 
   private:
-    mutable std::mutex                        _mutex;
-    std::deque<std::string>                   _names;
+    mutable std::mutex      _mutex;
+    std::deque<std::string> _names;
+    static void store(std::int32_t &slot, bool on) { std::atomic_ref<std::int32_t>(slot).store(on ? 1 : 0, std::memory_order_relaxed); }
+
+    /// Whether each domain is wanted on, its own setting, beside its name.
+    std::deque<bool> _wanted;
+    /// Each domain's switch as sites read it: wanted and the global switch on. A deque, so each
+    /// stays where it is as it grows; mutable, as std::atomic_ref takes no const object.
+    mutable std::deque<std::int32_t>          _switches;
+    bool                                      _global{true};
     std::unordered_map<std::string, uint32_t> _ids;
 };
 

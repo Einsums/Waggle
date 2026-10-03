@@ -84,14 +84,16 @@ class Zone:
     and nothing else. One ``Zone`` may be entered from several threads at once and recursively.
     """
 
-    __slots__ = ("name", "_site")
+    __slots__ = ("name", "_site", "_domain")
 
     def __init__(self, name: str, *, file: str = "", line: int = 0, func: str = "", domain: str = "python") -> None:
         self.name = name
-        self._site = _core().register_site(name, file, line, func, domain)
+        core = _core()
+        self._site = core.register_site(name, file, line, func, domain)
+        self._domain = core.register_domain(domain)
 
     def __enter__(self) -> Zone:
-        _stack().append(_core_module.zone_begin(self._site))
+        _stack().append(_core_module.zone_begin(self._site, 0, self._domain))
         return self
 
     def __exit__(self, *exc: object) -> None:

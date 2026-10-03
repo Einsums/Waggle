@@ -70,6 +70,20 @@ WAGGLE_C_EXPORT void waggle_set_enabled(int on);
  * std::atomic_ref); never write it. The address is fixed for the life of the process. */
 WAGGLE_C_EXPORT int32_t const *waggle_enabled_flag(void);
 
+/* Domain `domain`'s recording switch, read as waggle_enabled_flag's is: 1 when the domain and the
+ * global switch are both on, so it is the one switch a zone at the domain's sites needs to read.
+ * waggle_zone_begin does not look a site's domain up, so a caller of this interface reads this in
+ * place of the global switch; Waggle's C++ header and Python module do. The address is fixed for
+ * the life of the process. */
+WAGGLE_C_EXPORT int32_t const *waggle_domain_flag(uint32_t domain);
+
+/* Turn recording on or off for the library named `name` (registered if new), whatever the
+ * global switch says. */
+WAGGLE_C_EXPORT void waggle_domain_set_enabled(char const *name, size_t length, int on);
+
+/* Whether domain `domain` records, its own switch alone. */
+WAGGLE_C_EXPORT int waggle_domain_enabled(uint32_t domain);
+
 /* Open a zone at `site`, named `name_id`, or by its site when `name_id` is 0. Returns 1 when it
  * opened one and 0 when recording is off; call waggle_zone_end exactly when it returned 1, so a
  * switch of recording while the zone is open cannot unbalance the pairs. */

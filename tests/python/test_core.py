@@ -128,6 +128,25 @@ def test_merged_snapshot_combines_threads():
     assert merged.find("py: merged").call_count == 3
 
 
+def test_a_switched_off_domain_records_nothing():
+    on, off = waggle.Zone("py: domain on", domain="py_on"), waggle.Zone("py: domain off", domain="py_off")
+    waggle.set_domain_enabled("py_off", False)
+    try:
+        assert not waggle.domain_enabled("py_off") and waggle.domain_enabled("py_on")
+
+        def body():
+            with on:
+                with off:
+                    pass
+
+        on_fresh_thread(body)
+    finally:
+        waggle.set_domain_enabled("py_off", True)
+    snap = waggle.snapshot()
+    assert snap.find("py: domain on") is not None
+    assert snap.find("py: domain on/py: domain off") is None
+
+
 def test_settings_by_name():
     assert waggle.override_settings({"max_distinct_children": "100"}) == 0
     assert waggle.setting("max_distinct_children") == "100"

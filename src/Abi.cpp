@@ -177,6 +177,28 @@ void waggle_set_enabled(int on) {
     profiler().set_enabled(on != 0);
 }
 
+int32_t const *waggle_domain_flag(uint32_t domain) {
+    if (waggle::collector_inactive()) {
+        return &kOff;
+    }
+    return profiler().domain_table().switch_of(domain);
+}
+
+void waggle_domain_set_enabled(char const *name, size_t length, int on) {
+    if (waggle::collector_inactive()) {
+        return;
+    }
+    auto &p = profiler();
+    p.domain_table().set_enabled(p.register_domain(std::string_view(name, length)), on != 0);
+}
+
+int waggle_domain_enabled(uint32_t domain) {
+    if (waggle::collector_inactive()) {
+        return 0;
+    }
+    return profiler().domain_table().enabled(domain) ? 1 : 0;
+}
+
 int32_t const *waggle_enabled_flag(void) {
     if (waggle::collector_inactive()) {
         return &kOff;

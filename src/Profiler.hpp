@@ -74,14 +74,6 @@
 #    include <sys/neutrino.h>
 #endif
 
-/// The few functions every zone, annotation and memory event passes through, inlined into the
-/// entry points whatever the compiler's own estimate of their size.
-#if defined(_MSC_VER)
-#    define WAGGLE_FORCEINLINE __forceinline
-#else
-#    define WAGGLE_FORCEINLINE inline __attribute__((always_inline))
-#endif
-
 WAGGLE_NAMESPACE_BEGIN
 
 // ---------------------- Profiler class ----------------------
@@ -106,7 +98,10 @@ struct WAGGLE_EXPORT Profiler {
 
     /// Whether zones and annotations are recorded. When off, each entry point costs one relaxed load.
     [[nodiscard]] bool enabled() const { return std::atomic_ref<int32_t>(_enabled).load(std::memory_order_relaxed) != 0; }
-    void               set_enabled(bool on) { std::atomic_ref<int32_t>(_enabled).store(on ? 1 : 0, std::memory_order_relaxed); }
+    void               set_enabled(bool on) {
+        std::atomic_ref<int32_t>(_enabled).store(on ? 1 : 0, std::memory_order_relaxed);
+        _domains.set_global(on);
+    }
 
     /// The recording switch, for callers that check it before calling in (waggle_enabled_flag).
     [[nodiscard]] auto enabled_flag() const -> int32_t const * { return &_enabled; }
@@ -168,6 +163,7 @@ struct WAGGLE_EXPORT Profiler {
 
     /// The libraries sites were registered for.
     [[nodiscard]] auto domain_table() const -> DomainTable const & { return _domains; }
+    [[nodiscard]] auto domain_table() -> DomainTable & { return _domains; }
 
     /// The call sites registered so far.
     auto sites() const -> SiteTable const & { return _sites; }

@@ -172,6 +172,23 @@ void Profiler::apply(Settings const &s) {
     if (s.server) {
         start_server(static_cast<uint16_t>(s.port));
     }
+    // Switch off the libraries the settings name. Turning one back on is the program's to do,
+    // with waggle_domain_set_enabled, so a setting applied again leaves that alone.
+    std::string_view rest = s.disabled_domains;
+    while (!rest.empty()) {
+        auto const       comma = rest.find(',');
+        std::string_view name  = rest.substr(0, comma);
+        rest                   = comma == std::string_view::npos ? std::string_view{} : rest.substr(comma + 1);
+        while (!name.empty() && name.front() == ' ') {
+            name.remove_prefix(1);
+        }
+        while (!name.empty() && name.back() == ' ') {
+            name.remove_suffix(1);
+        }
+        if (!name.empty()) {
+            _domains.set_enabled(_domains.add(name), false);
+        }
+    }
 }
 
 auto Profiler::configure(SettingsUpdate const &update) -> size_t {

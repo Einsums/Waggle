@@ -13,6 +13,7 @@
 #include <Waggle/Waggle.h>
 
 #include <apiary/Annotations.hpp>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <map>
@@ -137,10 +138,31 @@ APIARY_EXPOSE inline std::uint32_t register_site(std::string const &name, std::s
 
 // ---------------------- Recording ----------------------
 
-/// Open a zone at @p site, named by it or by @p name_id when not 0. Returns whether it opened
-/// one; call ``zone_end`` exactly when it did.
-APIARY_EXPOSE inline bool zone_begin(std::uint32_t site, std::uint32_t name_id = 0) {
+/// The id of the library named @p name, registered if new.
+APIARY_EXPOSE inline std::uint32_t register_domain(std::string const &name) {
+    return waggle_register_domain(name.data(), name.size());
+}
+
+/// Open a zone at @p site, named by it or by @p name_id when not 0, unless its library @p domain is
+/// switched off. Returns whether it opened one; call ``zone_end`` exactly when it did.
+APIARY_EXPOSE inline bool zone_begin(std::uint32_t site, std::uint32_t name_id = 0, std::uint32_t domain = 0) {
+    if (domain != 0) {
+        std::int32_t *const flag = const_cast<std::int32_t *>(waggle_domain_flag(domain)); // NOLINT(cppcoreguidelines-pro-type-const-cast)
+        if (std::atomic_ref<std::int32_t>(*flag).load(std::memory_order_relaxed) == 0) {
+            return false;
+        }
+    }
     return waggle_zone_begin(site, name_id) != 0;
+}
+
+/// Turn recording on or off for the library named @p domain, whatever the global switch says.
+APIARY_EXPOSE inline void set_domain_enabled(std::string const &domain, bool on) {
+    waggle_domain_set_enabled(domain.data(), domain.size(), on ? 1 : 0);
+}
+
+/// Whether the library named @p domain records, its own switch alone.
+APIARY_EXPOSE inline bool domain_enabled(std::string const &domain) {
+    return waggle_domain_enabled(waggle_register_domain(domain.data(), domain.size())) != 0;
 }
 
 /// Close the zone the calling thread opened last.

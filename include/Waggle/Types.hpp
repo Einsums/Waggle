@@ -31,6 +31,7 @@ struct Settings {
     std::int64_t port{19216};                ///< The server's port.
     bool         wait_for_viewer{false};     ///< Hold the program until a viewer connects.
     std::int64_t max_distinct_children{256}; ///< Distinct child names per node before the rest fold into "(other)"; 0 for no limit.
+    std::string  disabled_domains{};         ///< Libraries whose zones are not recorded, comma-separated (``einsums,mylib``).
 };
 
 /// Some settings to change; an empty member leaves that setting alone.
@@ -45,6 +46,7 @@ struct SettingsUpdate {
     std::optional<std::int64_t> port;
     std::optional<bool>         wait_for_viewer;
     std::optional<std::int64_t> max_distinct_children;
+    std::optional<std::string>  disabled_domains;
 };
 
 /// How much a profiler message matters.

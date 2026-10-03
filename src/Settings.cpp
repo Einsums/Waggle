@@ -33,6 +33,7 @@ void for_each_setting(Update &update, Settings &settings, F &&f) {
     f(7, "port", update.port, settings.port);
     f(8, "wait_for_viewer", update.wait_for_viewer, settings.wait_for_viewer);
     f(9, "max_distinct_children", update.max_distinct_children, settings.max_distinct_children);
+    f(10, "disabled_domains", update.disabled_domains, settings.disabled_domains);
 }
 
 template <typename T>
@@ -159,6 +160,7 @@ auto SettingsStore::apply_environment(EnvironmentReader const &getenv) -> std::v
     take_int("WAGGLE_PORT", update.port);
     take_bool("WAGGLE_WAIT_FOR_VIEWER", update.wait_for_viewer);
     take_int("WAGGLE_MAX_DISTINCT_CHILDREN", update.max_distinct_children);
+    take_string("WAGGLE_DISABLE_DOMAINS", update.disabled_domains);
 
     // Below explicit settings: fill only what no library set.
     for_each_setting(update, _settings, [this](int index, char const * /*name*/, auto const &wanted, auto &current) {

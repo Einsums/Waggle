@@ -53,7 +53,22 @@ constexpr std::string_view current() {
 inline void zone() {
     WAGGLE_ZONE("domains: lib_b");
 }
+
+/// A zone of this library with an annotation and memory, entered inside the caller's zone.
+inline void annotated() {
+    WAGGLE_ZONE("domains: lib_b annotated");
+    WAGGLE_ANNOTATE("lib_b key", "lib_b value");
+    WAGGLE_MEM_ALLOC(64);
+}
 } // namespace lib_b
+
+namespace lib_a {
+/// lib_a's zone around a call into lib_b.
+inline void calls_b() {
+    WAGGLE_ZONE("domains: lib_a calls b");
+    lib_b::annotated();
+}
+} // namespace lib_a
 
 // An application namespace that brings both libraries into view: its zones are its own.
 namespace app {
@@ -125,4 +140,41 @@ TEST_CASE("A zone belongs to the library whose namespace it is written in", "[pr
     auto const zone   = merged.find(0, "domains: lib_b");
     REQUIRE(zone);
     CHECK(zone->domain() == "lib_b");
+}
+
+// Per-domain switches: a library can be switched off at run time, and its zones, annotations and
+// memory then record nothing, without landing on the zone of the library around them.
+TEST_CASE("A switched-off library records nothing, and nothing of it lands on its caller", "[profiler][domains]") {
+    waggle::set_enabled(true);
+    waggle::set_domain_enabled("lib_b", false);
+    CHECK_FALSE(waggle::domain_enabled("lib_b"));
+    CHECK(waggle::domain_enabled("lib_a"));
+    std::thread([] { lib_a::calls_b(); }).join();
+    waggle::set_domain_enabled("lib_b", true);
+
+    auto const snapshot = waggle::Snapshot::take();
+    auto const caller   = snapshot.find("domains: lib_a calls b");
+    REQUIRE(caller);
+    CHECK(caller->children().empty());
+    for (auto const &[key, value] : caller->annotations()) {
+        CHECK(key != "lib_b key");
+    }
+    CHECK(caller->stats().mem_alloc_bytes == 0);
+
+    // Switched back on, it records again.
+    std::thread([] { lib_a::calls_b(); }).join();
+    auto const again = waggle::Snapshot::take().find("domains: lib_a calls b/domains: lib_b annotated");
+    REQUIRE(again);
+    CHECK(again->stats().call_count == 1);
+    CHECK(again->stats().mem_alloc_bytes == 64);
+}
+
+TEST_CASE("The disabled_domains setting switches libraries off", "[profiler][domains]") {
+    waggle::override_settings({.disabled_domains = "settings_a, settings_b"});
+    CHECK_FALSE(waggle::domain_enabled("settings_a"));
+    CHECK_FALSE(waggle::domain_enabled("settings_b"));
+    CHECK(waggle::domain_enabled("settings_c"));
+    CHECK(waggle::settings().disabled_domains == "settings_a, settings_b");
+    waggle::set_domain_enabled("settings_a", true);
+    waggle::set_domain_enabled("settings_b", true);
 }

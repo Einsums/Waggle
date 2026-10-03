@@ -111,6 +111,7 @@ auto apply_settings(SettingsUpdate const &update, Set set) -> int {
     one("port", update.port);
     one("wait_for_viewer", update.wait_for_viewer);
     one("max_distinct_children", update.max_distinct_children);
+    one("disabled_domains", update.disabled_domains);
     std::vector<char const *> values;
     values.reserve(texts.size());
     for (auto const &text : texts) {
@@ -125,9 +126,21 @@ auto apply_settings(SettingsUpdate const &update, Set set) -> int {
  * A zone or annotation checks this before calling into the collector, so with recording off it
  * costs a load and a branch rather than a call. The switch's address is looked up once.
  */
-inline bool recording() {
+WAGGLE_FORCEINLINE bool recording() {
     static std::int32_t *const flag = const_cast<std::int32_t *>(waggle_enabled_flag()); // NOLINT(cppcoreguidelines-pro-type-const-cast)
     return std::atomic_ref<std::int32_t>(*flag).load(std::memory_order_relaxed) != 0;
+}
+
+/// Whether the switch at @p flag (a domain's, from waggle_domain_flag) is on.
+WAGGLE_FORCEINLINE bool on(std::int32_t const *flag) {
+    return std::atomic_ref<std::int32_t>(*const_cast<std::int32_t *>(flag)).load(std::memory_order_relaxed) !=
+           0; // NOLINT(cppcoreguidelines-pro-type-const-cast)
+}
+
+/// Whether zones of a domain record now, from its switch (waggle_domain_flag), which already
+/// includes the global one.
+WAGGLE_FORCEINLINE bool recording(std::int32_t const *domain) {
+    return on(domain);
 }
 
 } // namespace detail
@@ -142,6 +155,16 @@ inline bool enabled() {
 /// Turn recording on or off for the whole process.
 inline void set_enabled(bool on) {
     waggle_set_enabled(on ? 1 : 0);
+}
+
+/// Turn recording on or off for the library named @p domain, whatever the global switch says.
+inline void set_domain_enabled(std::string_view domain, bool on) {
+    waggle_domain_set_enabled(domain.data(), domain.size(), on ? 1 : 0);
+}
+
+/// Whether the library named @p domain records, its own switch alone.
+inline bool domain_enabled(std::string_view domain) {
+    return waggle_domain_enabled(waggle_register_domain(domain.data(), domain.size())) != 0;
 }
 
 /// The id of the call site at @p file : @p line in @p func, named @p name; the same description
@@ -221,6 +244,7 @@ inline Settings settings() {
     number("port", s.port);
     flag("wait_for_viewer", s.wait_for_viewer);
     number("max_distinct_children", s.max_distinct_children);
+    text("disabled_domains", s.disabled_domains);
     return s;
 }
 
@@ -373,9 +397,14 @@ struct ZoneSite {
     /// @p domain names the library the site belongs to; the zone macros pass
     /// @ref WAGGLE_CURRENT_DOMAIN.
     ZoneSite(std::string_view name, char const *file, int line, char const *func, std::string_view domain = {})
-        : site_id{waggle_register_site(name.data(), name.size(), file, line, func, register_domain(domain))} {}
+        : ZoneSite(name, file, line, func, register_domain(domain)) {}
 
-    uint32_t site_id{0};
+    uint32_t            site_id{0};
+    std::int32_t const *domain_switch{nullptr}; ///< The site's domain's switch, checked on entry.
+
+  private:
+    ZoneSite(std::string_view name, char const *file, int line, char const *func, uint32_t domain)
+        : site_id{waggle_register_site(name.data(), name.size(), file, line, func, domain)}, domain_switch{waggle_domain_flag(domain)} {}
 };
 
 /**
@@ -529,7 +558,17 @@ inline constexpr uint32_t kNotInterned = std::numeric_limits<uint32_t>::max();
 ///
 /// Values are not held here: ``c ? "T" : "N"`` has a literal's type but not a fixed value.
 struct AnnotateSite {
-    std::atomic<uint32_t> key_id{kNotInterned};
+    std::atomic<uint32_t>             key_id{kNotInterned};
+    std::atomic<std::int32_t const *> domain_switch{nullptr}; ///< The site's domain's, found on first use.
+
+    static std::int32_t const *switch_of(std::atomic<std::int32_t const *> &slot, std::string_view domain) {
+        std::int32_t const *flag = slot.load(std::memory_order_acquire);
+        if (flag == nullptr) [[unlikely]] {
+            flag = waggle_domain_flag(register_domain(domain));
+            slot.store(flag, std::memory_order_release);
+        }
+        return flag;
+    }
 
     static uint32_t fill(std::atomic<uint32_t> &slot, std::string_view s) {
         uint32_t id = slot.load(std::memory_order_relaxed);
@@ -545,14 +584,15 @@ struct AnnotateSite {
 
 struct ScopedZone {
     /// Enter a zone with a fixed name. Takes no lock: the site holds every id.
-    explicit ScopedZone(ZoneSite const &site) : _open(detail::recording() && waggle_zone_begin(site.site_id, 0) != 0) {}
+    WAGGLE_FORCEINLINE explicit ScopedZone(ZoneSite const &site)
+        : _open(detail::recording(site.domain_switch) && waggle_zone_begin(site.site_id, 0) != 0) {}
 
     /// Enter a zone whose name is built per call; only the name is interned. It arrives as a callable
     /// so nothing is built when recording is off.
     template <typename MakeName>
         requires std::invocable<MakeName>
     ScopedZone(ZoneSite const &site, MakeName &&make_name) {
-        if (!detail::recording()) {
+        if (!detail::recording(site.domain_switch)) {
             return;
         }
         _open = waggle_zone_begin(site.site_id, detail::intern(make_name())) != 0;
@@ -569,7 +609,7 @@ struct ScopedZone {
     template <typename ApplyArgs, typename FormatName>
         requires std::is_class_v<std::remove_cvref_t<ApplyArgs>> && std::is_class_v<FormatName>
     ScopedZone(ZoneSite const &site, ApplyArgs &&apply_args, FormatName const &format_name) {
-        if (!detail::recording()) {
+        if (!detail::recording(site.domain_switch)) {
             return;
         }
         std::forward<ApplyArgs>(apply_args)([&](auto &&...args) {
@@ -579,7 +619,8 @@ struct ScopedZone {
 
     /// Enter a zone with a name the caller interned (@ref intern_string), for callers with a stable
     /// set of runtime names, such as graph replay. Takes no lock.
-    ScopedZone(ZoneSite const &site, uint32_t name_id) : _open(detail::recording() && waggle_zone_begin(site.site_id, name_id) != 0) {}
+    WAGGLE_FORCEINLINE ScopedZone(ZoneSite const &site, uint32_t name_id)
+        : _open(detail::recording(site.domain_switch) && waggle_zone_begin(site.site_id, name_id) != 0) {}
 
     /// Enter a zone at a site described at run time, registered on every entry.
     explicit ScopedZone(std::string_view name, char const *file = "", int line = 0, char const *func = "") {
@@ -590,7 +631,7 @@ struct ScopedZone {
 
     /// Leave the zone, if entering opened one: switching recording while it is open changes
     /// nothing about which zones close.
-    ~ScopedZone() {
+    WAGGLE_FORCEINLINE ~ScopedZone() {
         if (_open) {
             waggle_zone_end();
         }
@@ -662,8 +703,8 @@ namespace site_cache {
  * per-site, per-thread cache. @p get_value runs only when recording.
  */
 template <std::size_t N, typename GetValue>
-void annotate_at(AnnotateSite &site, char const (&key)[N], GetValue &&get_value) {
-    if (!detail::recording()) {
+void annotate_at(AnnotateSite &site, char const (&key)[N], GetValue &&get_value, std::string_view domain = {}) {
+    if (!detail::on(AnnotateSite::switch_of(site.domain_switch, domain))) {
         return;
     }
     uint32_t const key_id = AnnotateSite::fill(site.key_id, key);
@@ -951,9 +992,22 @@ constexpr char const *waggle_domain(::waggle::domain_lookup /*unused*/) noexcept
 #    define WAGGLE_ANNOTATE(key, value)                                                                                                    \
         [&]() {                                                                                                                            \
             static ::waggle::site_cache::AnnotateSite _annotate_site;                                                                      \
-            ::waggle::site_cache::annotate_at(_annotate_site, key, [&]() -> decltype(auto) { return (value); });                           \
+            ::waggle::site_cache::annotate_at(_annotate_site, key, [&]() -> decltype(auto) { return (value); }, WAGGLE_CURRENT_DOMAIN);    \
         }()
 #    define WAGGLE_ANNOTATE_DIMS(key, dims) ::waggle::annotate_dims(key, dims)
-#    define WAGGLE_MEM_ALLOC(bytes)         ::waggle::mem_alloc(static_cast<int64_t>(bytes))
-#    define WAGGLE_MEM_FREE(bytes)          ::waggle::mem_free(static_cast<int64_t>(bytes))
+// Memory is attributed only where the zone it belongs to records: not when the domain is off.
+#    define WAGGLE_MEM_ALLOC(bytes)                                                                                                        \
+        [&]() {                                                                                                                            \
+            static std::int32_t const *const _waggle_switch = ::waggle_domain_flag(::waggle::register_domain(WAGGLE_CURRENT_DOMAIN));      \
+            if (::waggle::detail::on(_waggle_switch)) {                                                                                    \
+                ::waggle::mem_alloc(static_cast<int64_t>(bytes));                                                                          \
+            }                                                                                                                              \
+        }()
+#    define WAGGLE_MEM_FREE(bytes)                                                                                                         \
+        [&]() {                                                                                                                            \
+            static std::int32_t const *const _waggle_switch = ::waggle_domain_flag(::waggle::register_domain(WAGGLE_CURRENT_DOMAIN));      \
+            if (::waggle::detail::on(_waggle_switch)) {                                                                                    \
+                ::waggle::mem_free(static_cast<int64_t>(bytes));                                                                           \
+            }                                                                                                                              \
+        }()
 #endif

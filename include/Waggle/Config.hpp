@@ -32,3 +32,11 @@
 #define WAGGLE_PP_CAT_IMPL(a, b) a##b
 /// Paste two tokens after expanding them, for names built from __LINE__.
 #define WAGGLE_PP_CAT(a, b) WAGGLE_PP_CAT_IMPL(a, b)
+
+/// Inlined whatever the compiler's own estimate of its size: the few functions a zone, annotation
+/// or memory event passes through, where a call would cost more than the work.
+#if defined(_MSC_VER)
+#    define WAGGLE_FORCEINLINE __forceinline
+#else
+#    define WAGGLE_FORCEINLINE inline __attribute__((always_inline))
+#endif
