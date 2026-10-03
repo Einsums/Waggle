@@ -123,9 +123,10 @@ class ElfFunctions {
                 }
                 auto const *syms = reinterpret_cast<ElfW(Sym) const *>(data + sh.sh_offset);
                 auto const *text = reinterpret_cast<char const *>(data + strings.sh_offset);
+                // ELF64_ST_TYPE is ELF32_ST_TYPE too: both take the low four bits.
                 for (size_t k = 0; k < sh.sh_size / sizeof(ElfW(Sym)); ++k) {
                     ElfW(Sym) const &sym = syms[k];
-                    if (ELFW(ST_TYPE)(sym.st_info) == STT_FUNC && sym.st_value != 0 && sym.st_size != 0 && sym.st_name < strings.sh_size) {
+                    if (ELF64_ST_TYPE(sym.st_info) == STT_FUNC && sym.st_value != 0 && sym.st_size != 0 && sym.st_name < strings.sh_size) {
                         _functions.push_back({.start = sym.st_value, .size = sym.st_size, .name = text + sym.st_name});
                     }
                 }
