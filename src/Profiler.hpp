@@ -73,6 +73,14 @@
 #    include <sys/neutrino.h>
 #endif
 
+/// The few functions every zone, annotation and memory event passes through, inlined into the
+/// entry points whatever the compiler's own estimate of their size.
+#if defined(_MSC_VER)
+#    define WAGGLE_FORCEINLINE __forceinline
+#else
+#    define WAGGLE_FORCEINLINE inline __attribute__((always_inline))
+#endif
+
 WAGGLE_NAMESPACE_BEGIN
 
 // ---------------------- Profiler class ----------------------
@@ -104,7 +112,7 @@ struct WAGGLE_EXPORT Profiler {
     /// Start a zone at site @p site_id (see @ref ZoneSite), named @p name_id, or by its site when
     /// @p name_id is 0. Returns whether it opened one: only then is there a zone for @ref pop to
     /// close.
-    auto push_interned(uint32_t site_id, uint32_t name_id) -> bool {
+    WAGGLE_FORCEINLINE auto push_interned(uint32_t site_id, uint32_t name_id) -> bool {
         if (!enabled()) {
             return false;
         }
@@ -150,7 +158,7 @@ struct WAGGLE_EXPORT Profiler {
     // Stop timer region
     /// Close the zone a @ref push_interned that returned true opened, whatever the switch says
     /// now.
-    void pop() { write_pop(thread_channel()); }
+    WAGGLE_FORCEINLINE void pop() { write_pop(thread_channel()); }
 
     // Print the report: exclusive time, percent, name, file:line and function. @p detailed adds
     // min/max/avg and counters.
@@ -267,7 +275,7 @@ struct WAGGLE_EXPORT Profiler {
 
     /// Annotate the calling thread's innermost zone: @p fill sets the value in the payload.
     template <typename Fill>
-    void annotate(uint32_t key_id, AnnotateValueType type, Fill &&fill) {
+    WAGGLE_FORCEINLINE void annotate(uint32_t key_id, AnnotateValueType type, Fill &&fill) {
         if (!enabled()) {
             return;
         }
@@ -282,7 +290,7 @@ struct WAGGLE_EXPORT Profiler {
 
     /// Record an allocation or a free (@p type) in the calling thread's innermost zone. An empty
     /// one records nothing.
-    void memory(EventType type, void const *address, int64_t bytes) {
+    WAGGLE_FORCEINLINE void memory(EventType type, void const *address, int64_t bytes) {
         if (bytes == 0 || !enabled()) {
             return;
         }
@@ -295,7 +303,7 @@ struct WAGGLE_EXPORT Profiler {
     }
 
     // Emit an event to the thread-local ring buffer. Used by annotation API.
-    void emit_event(Event const &evt) {
+    WAGGLE_FORCEINLINE void emit_event(Event const &evt) {
         auto &ch = thread_channel();
         (void)ch.ring.try_push(evt); // a refused push is counted by the ring
         wake_consumer_if_filling(ch);
@@ -441,7 +449,7 @@ struct WAGGLE_EXPORT Profiler {
 
     /// Record a zone opening on @p ch: one clock read and one event written in place. A full ring
     /// skips the clock and counter reads.
-    void write_push(ThreadChannel &ch, uint32_t site_id, uint32_t name_id) {
+    WAGGLE_FORCEINLINE void write_push(ThreadChannel &ch, uint32_t site_id, uint32_t name_id) {
         // Counted even when the event is dropped: the consumer resynchronizes on it.
         uint32_t const depth = ++ch.depth;
         if (Event *evt = ch.ring.try_claim()) {
@@ -456,7 +464,7 @@ struct WAGGLE_EXPORT Profiler {
     }
 
     /// Record a zone's closing on @p ch.
-    void write_pop(ThreadChannel &ch) {
+    WAGGLE_FORCEINLINE void write_pop(ThreadChannel &ch) {
         // Nothing open: skip it, so a Pop's depth always names an open zone.
         if (ch.depth == 0) {
             return;

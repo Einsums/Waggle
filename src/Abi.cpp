@@ -10,6 +10,7 @@
 #include <Waggle/Waggle.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <iostream>
@@ -27,9 +28,52 @@ struct waggle_reply {
     std::string data;
 };
 
+WAGGLE_NAMESPACE_BEGIN
+
+// Defined here, beside the entry points a zone goes through, so the compiler inlines them there.
+// They stay exported functions for the rest of the collector and its tests.
+
+auto Profiler::instance() -> Profiler & {
+    static Profiler p;
+    return p;
+}
+
+auto Profiler::thread_channel() -> ThreadChannel & {
+    // Constant-initialized, so reading it needs no initialization guard.
+    static thread_local ThreadChannel *channel = nullptr;
+    if (channel == nullptr) [[unlikely]] {
+        channel = &instance().register_thread();
+    }
+    return *channel;
+}
+
+WAGGLE_NAMESPACE_END
+
 namespace {
 
 using waggle::Profiler;
+
+/// The profiler, once built: what every zone, annotation and memory event reaches it through, a
+/// load and a branch rather than a call through the instance's initialization guard. Null in a
+/// copy of the collector that switched itself off, which never builds one.
+std::atomic<Profiler *> g_active{nullptr};
+
+/// The first call: build the profiler, unless this copy is off.
+[[gnu::noinline]] auto activate() -> Profiler * {
+    if (waggle::collector_inactive()) {
+        return nullptr;
+    }
+    Profiler *const p = &Profiler::instance();
+    g_active.store(p, std::memory_order_release);
+    return p;
+}
+
+WAGGLE_FORCEINLINE auto active() -> Profiler * {
+    if (Profiler *p = g_active.load(std::memory_order_acquire)) [[likely]] {
+        return p;
+    }
+    return activate();
+}
 
 auto profiler() -> Profiler & {
     return Profiler::instance();
@@ -141,52 +185,44 @@ int32_t const *waggle_enabled_flag(void) {
 }
 
 int waggle_zone_begin(uint32_t site, uint32_t name_id) {
-    if (waggle::collector_inactive()) {
-        return 0;
-    }
-    return profiler().push_interned(site, name_id) ? 1 : 0;
+    Profiler *const p = active();
+    return p != nullptr && p->push_interned(site, name_id) ? 1 : 0;
 }
 
 void waggle_zone_end(void) {
-    if (waggle::collector_inactive()) {
-        return;
+    if (Profiler *const p = active()) {
+        p->pop();
     }
-    profiler().pop();
 }
 
 void waggle_annotate_str(uint32_t key_id, uint32_t value_id) {
-    if (waggle::collector_inactive()) {
-        return;
+    if (Profiler *const p = active()) {
+        p->annotate(key_id, waggle::AnnotateValueType::String, [&](waggle::AnnotationPayload &a) { a.string_id = value_id; });
     }
-    profiler().annotate(key_id, waggle::AnnotateValueType::String, [&](waggle::AnnotationPayload &a) { a.string_id = value_id; });
 }
 
 void waggle_annotate_i64(uint32_t key_id, int64_t value) {
-    if (waggle::collector_inactive()) {
-        return;
+    if (Profiler *const p = active()) {
+        p->annotate(key_id, waggle::AnnotateValueType::Int64, [&](waggle::AnnotationPayload &a) { a.int_val = value; });
     }
-    profiler().annotate(key_id, waggle::AnnotateValueType::Int64, [&](waggle::AnnotationPayload &a) { a.int_val = value; });
 }
 
 void waggle_annotate_f64(uint32_t key_id, double value) {
-    if (waggle::collector_inactive()) {
-        return;
+    if (Profiler *const p = active()) {
+        p->annotate(key_id, waggle::AnnotateValueType::Float64, [&](waggle::AnnotationPayload &a) { a.float_val = value; });
     }
-    profiler().annotate(key_id, waggle::AnnotateValueType::Float64, [&](waggle::AnnotationPayload &a) { a.float_val = value; });
 }
 
 void waggle_mem_alloc(void const *address, int64_t bytes) {
-    if (waggle::collector_inactive()) {
-        return;
+    if (Profiler *const p = active()) {
+        p->memory(waggle::EventType::MemAlloc, address, bytes);
     }
-    profiler().memory(waggle::EventType::MemAlloc, address, bytes);
 }
 
 void waggle_mem_free(void const *address, int64_t bytes) {
-    if (waggle::collector_inactive()) {
-        return;
+    if (Profiler *const p = active()) {
+        p->memory(waggle::EventType::MemFree, address, bytes);
     }
-    profiler().memory(waggle::EventType::MemFree, address, bytes);
 }
 
 void waggle_set_thread_name(char const *name, size_t length) {

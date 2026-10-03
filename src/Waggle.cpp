@@ -146,20 +146,6 @@ auto const &escape_json = detail::json_escape;
 
 } // namespace
 
-auto Profiler::instance() -> Profiler & {
-    static Profiler p;
-    return p;
-}
-
-auto Profiler::thread_channel() -> ThreadChannel & {
-    // Constant-initialized, so reading it needs no initialization guard.
-    static thread_local ThreadChannel *channel = nullptr;
-    if (channel == nullptr) [[unlikely]] {
-        channel = &instance().register_thread();
-    }
-    return *channel;
-}
-
 Profiler::Profiler() : _consumer(std::make_unique<Consumer>(_strings, _sites)) {
     // Statics are destroyed in the reverse order of their construction, and a program that never
     // calls finalize leaves this destructor to drain the rings and stop the server at exit. So
