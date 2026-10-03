@@ -49,8 +49,50 @@ set_tests_properties(${WAGGLE_TEST_PREFIX}CApi PROPERTIES ENVIRONMENT "WAGGLE_RE
 add_executable(waggle_ExitWithoutFinalize_test unit/ExitWithoutFinalize.cpp)
 target_link_libraries(waggle_ExitWithoutFinalize_test PRIVATE Waggle::waggle)
 add_dependencies(waggle_tests waggle_ExitWithoutFinalize_test)
+# It also asks, through the environment, for the outputs a finalize would write; they must be
+# written at exit all the same. Old ones are removed first, and checked once the program has ended.
+set(_exit_report ${CMAKE_CURRENT_BINARY_DIR}/exit_without_finalize_report.txt)
+set(_exit_session ${CMAKE_CURRENT_BINARY_DIR}/exit_without_finalize_session.json)
+add_test(NAME ${WAGGLE_TEST_PREFIX}ExitWithoutFinalizeClean COMMAND ${CMAKE_COMMAND} -E rm -f ${_exit_report} ${_exit_session})
+set_tests_properties(${WAGGLE_TEST_PREFIX}ExitWithoutFinalizeClean PROPERTIES FIXTURES_SETUP waggle_exit_clean)
 add_test(NAME ${WAGGLE_TEST_PREFIX}ExitWithoutFinalize COMMAND waggle_ExitWithoutFinalize_test)
-set_tests_properties(${WAGGLE_TEST_PREFIX}ExitWithoutFinalize PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false" TIMEOUT 300)
+set_tests_properties(
+  ${WAGGLE_TEST_PREFIX}ExitWithoutFinalize
+  PROPERTIES ENVIRONMENT "WAGGLE_REPORT=true;WAGGLE_REPORT_FILE=${_exit_report};WAGGLE_SAVE=${_exit_session}"
+             FIXTURES_REQUIRED waggle_exit_clean
+             FIXTURES_SETUP waggle_exit_outputs
+             TIMEOUT 300
+)
+add_test(NAME ${WAGGLE_TEST_PREFIX}ExitWithoutFinalizeReport
+         COMMAND ${CMAKE_COMMAND} -DFILE=${_exit_report} "-DEXPECT=exit: left for the drain" -P
+                 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_contains.cmake
+)
+set_tests_properties(${WAGGLE_TEST_PREFIX}ExitWithoutFinalizeReport PROPERTIES FIXTURES_REQUIRED waggle_exit_outputs)
+# And a program that never opens a zone writes no report at exit, though reports are on by default.
+set(_unused_report ${CMAKE_CURRENT_BINARY_DIR}/exit_without_zones_report.txt)
+add_executable(waggle_ExitWithoutZones_test unit/ExitWithoutZones.cpp)
+target_link_libraries(waggle_ExitWithoutZones_test PRIVATE Waggle::waggle)
+add_dependencies(waggle_tests waggle_ExitWithoutZones_test)
+add_test(NAME ${WAGGLE_TEST_PREFIX}ExitWithoutZonesClean COMMAND ${CMAKE_COMMAND} -E rm -f ${_unused_report})
+set_tests_properties(${WAGGLE_TEST_PREFIX}ExitWithoutZonesClean PROPERTIES FIXTURES_SETUP waggle_unused_clean)
+add_test(NAME ${WAGGLE_TEST_PREFIX}ExitWithoutZones COMMAND waggle_ExitWithoutZones_test)
+set_tests_properties(
+  ${WAGGLE_TEST_PREFIX}ExitWithoutZones PROPERTIES ENVIRONMENT "WAGGLE_REPORT_FILE=${_unused_report}" FIXTURES_REQUIRED
+                                                   waggle_unused_clean FIXTURES_SETUP waggle_unused_ran TIMEOUT 300
+)
+add_test(NAME ${WAGGLE_TEST_PREFIX}ExitWithoutZonesNoReport COMMAND ${CMAKE_COMMAND} -DFILE=${_unused_report} -P
+                                                                    ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_absent.cmake
+)
+set_tests_properties(${WAGGLE_TEST_PREFIX}ExitWithoutZonesNoReport PROPERTIES FIXTURES_REQUIRED waggle_unused_ran)
+
+if(NOT WIN32)
+  # The session file is the server's, which does not run on Windows.
+  add_test(NAME ${WAGGLE_TEST_PREFIX}ExitWithoutFinalizeSession
+           COMMAND ${CMAKE_COMMAND} -DFILE=${_exit_session} "-DEXPECT=exit: left for the drain" -P
+                   ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_contains.cmake
+  )
+  set_tests_properties(${WAGGLE_TEST_PREFIX}ExitWithoutFinalizeSession PROPERTIES FIXTURES_REQUIRED waggle_exit_outputs)
+endif()
 
 # A second, separately built copy of the collector, for the test that loads two at once. Its sources
 # and settings are the collector's own; only the file differs.

@@ -220,7 +220,10 @@ void Profiler::finalize(std::string const &client) {
         }
         _finalized = true;
     }
+    finish(false);
+}
 
+void Profiler::finish(bool at_exit) {
     Settings const s = settings();
     // The session file first: it is written by the server, which shutdown() stops.
     try {
@@ -237,7 +240,9 @@ void Profiler::finalize(std::string const &client) {
     shutdown();
 
     try {
-        if (s.report) {
+        // At exit, a program that never opened a zone did not use the profiler, whatever its
+        // libraries link: it gets no report file in its working directory.
+        if (s.report && !(at_exit && total_push_count() == 0)) {
             std::ofstream out(s.report_file, s.report_append ? std::ios::app : std::ios::trunc);
             print(s.report_detailed, out);
         }

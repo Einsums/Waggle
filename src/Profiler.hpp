@@ -320,14 +320,29 @@ struct WAGGLE_EXPORT Profiler {
     /// Make the profiler match @p s: the recording switch, the consumer's child cap, the server.
     void apply(Settings const &s);
 
-    // Fallback for programs that never call finalize. The consumer must stop
-    // before members are destroyed: its tick calls into _server, which is destroyed first.
+    /// What the last finalize does: write the session file and the report the settings ask for,
+    /// and stop the consumer and the server. @p at_exit when no finalize ran, where the report is
+    /// written only if some zone was opened.
+    void finish(bool at_exit);
+
+    /// For a program that never called finalize, or whose libraries did not all: the same outputs
+    /// at exit. The consumer must stop before members are destroyed, as its tick calls into
+    /// _server, which is destroyed first; finish() does that.
     ~Profiler() {
-        if (_consumer) {
-            _consumer->shutdown();
+        bool unfinished = false;
+        {
+            std::scoped_lock const lock(_lifecycle_mutex);
+            unfinished = !_finalized;
+            _finalized = true;
         }
-        if (_server) {
-            _server->shutdown();
+        try {
+            if (unfinished) {
+                finish(true);
+            } else {
+                shutdown();
+            }
+        } catch (...) {
+            // Exiting: there is no one left to tell.
         }
     }
 

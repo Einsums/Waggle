@@ -72,6 +72,8 @@ The active collector then records which libraries' zones are missing.
 
 Libraries configure the collector, and the first explicit setting wins.
 The environment fills in what no library set.
+The report and the session file are written when the last library calls `waggle_finalize`, or at exit for a program that never does.
+At exit, a program that never opened a zone writes no report.
 
 | Variable | Meaning |
 | --- | --- |

@@ -3,10 +3,12 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-// A program that never calls finalize leaves the profiler's destructor to drain the rings and stop
-// the server during static destruction. It used to abort there ("mutex lock failed"): the server
-// reported its shutdown through a diagnostics mutex that was first used after the profiler was
-// built, and so had already been destroyed. Passes when the process exits cleanly.
+// A program that never calls finalize leaves the profiler's destructor to drain the rings, write
+// the outputs the settings ask for, and stop the server, during static destruction. It used to
+// abort there ("mutex lock failed"): the server reported its shutdown through a diagnostics mutex
+// that was first used after the profiler was built, and so had already been destroyed. And it used
+// to write nothing. Passes when the process exits cleanly; the report and session file it is asked
+// for through the environment are checked after it ends.
 
 #include <Waggle/Config.hpp>
 
