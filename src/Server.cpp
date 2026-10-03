@@ -45,6 +45,16 @@ WAGGLE_NAMESPACE_BEGIN
 
 namespace {
 
+/// Flags for every send to a viewer. A viewer can disconnect at any moment, and on Linux a send to
+/// its closed socket raises SIGPIPE, which ends the program unless the program ignores it; the
+/// profiler must not decide that for the program, so it asks for EPIPE instead, per send. macOS
+/// has no such flag and gets SO_NOSIGPIPE on each socket.
+#ifdef MSG_NOSIGNAL
+constexpr int kSendFlags = MSG_NOSIGNAL;
+#else
+constexpr int kSendFlags = 0;
+#endif
+
 #ifndef _WIN32
 void set_nonblocking(int fd) {
     int const flags = fcntl(fd, F_GETFL, 0);
@@ -578,7 +588,7 @@ void Server::send_snapshot_to(int fd) {
 
 #ifndef _WIN32
     // Best-effort send; drop if client can't keep up
-    ::send(fd, msg.data(), msg.size(), 0);
+    ::send(fd, msg.data(), msg.size(), kSendFlags);
 #endif
 }
 
@@ -667,7 +677,7 @@ void Server::send_updates() {
     std::vector<int> alive;
     for (int fd : _client_fds) {
 #ifndef _WIN32
-        ssize_t const sent = ::send(fd, msg.data(), msg.size(), 0);
+        ssize_t const sent = ::send(fd, msg.data(), msg.size(), kSendFlags);
         if (sent > 0) {
             alive.push_back(fd);
         } else {
@@ -835,7 +845,7 @@ void Server::process_request(int fd, std::string const &line) {
         response = R"({"type":"response","id":")" + escape_json_str(req_id) + "\",\"data\":{\"error\":\"unknown method\"}}\n";
     }
 
-    ::send(fd, response.data(), response.size(), 0);
+    ::send(fd, response.data(), response.size(), kSendFlags);
 #else
     (void)fd;
     (void)line;

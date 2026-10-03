@@ -30,6 +30,7 @@
 
 #ifndef _WIN32
 #    include <arpa/inet.h>
+#    include <csignal>
 #    include <netinet/in.h>
 #    include <sys/ioctl.h>
 #    include <sys/socket.h>
@@ -231,6 +232,45 @@ class LineReader {
     int         _fd;
     std::string _buffer;
 };
+
+// A send to a viewer that has disconnected raised SIGPIPE on Linux, which ends a program that has
+// not chosen to ignore it; Einsums ignored it, so only a program without Einsums died. macOS sets
+// SO_NOSIGPIPE per socket and never showed it.
+TEST_CASE("A viewer that disconnects does not end the program", "[profiler][server]") {
+    // The default action, which ends the process: as a program that never touched SIGPIPE has it.
+    struct sigaction current{};
+    REQUIRE(sigaction(SIGPIPE, nullptr, &current) == 0);
+    REQUIRE(current.sa_handler == SIG_DFL);
+
+    StringTable     strings;
+    SiteTable       sites;
+    Consumer        consumer(strings, sites);
+    RequestHandlers handlers;
+    uint16_t const  port = free_port();
+    Server          server(consumer, strings, handlers, "127.0.0.1", port);
+    REQUIRE(server.is_running());
+
+    int const gone = connect_to(port);
+    wait_until_queued(gone);
+    server.tick(); // accepts the viewer and sends it the meta line
+    ::close(gone);
+
+    // Keep sending to the closed socket: the first sends may land before the peer's reset does.
+    for (int i = 0; i < 50; ++i) {
+        server.publish("test_event", R"({"value":1})");
+        server.tick();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+
+    // Still serving: a new viewer is accepted and answered.
+    int const client = connect_to(port);
+    wait_until_queued(client);
+    server.tick();
+    LineReader reader(client);
+    CHECK(reader.next({R"("type":"meta")"}).find(R"("type":"meta")") != std::string::npos);
+    ::close(client);
+    server.shutdown();
+}
 
 TEST_CASE("The meta message lists every client and every switched-off collector", "[profiler][server]") {
     StringTable     strings;
