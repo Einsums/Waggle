@@ -118,6 +118,23 @@ if(WAGGLE_BUILD_TESTS)
   if(NOT TARGET Catch2::Catch2WithMain)
     find_package(Catch2 3 REQUIRED)
   endif()
+  # Some Catch2 builds, conda-forge's for Windows among them, leave out the std::string_view
+  # StringMaker; a test printing a string_view then fails to link. Match the build.
+  include(CheckCXXSourceCompiles)
+  include(CMakePushCheckState)
+  cmake_push_check_state()
+  set(CMAKE_REQUIRED_LIBRARIES Catch2::Catch2)
+  set(CMAKE_REQUIRED_QUIET TRUE)
+  check_cxx_source_compiles(
+    "#include <catch2/catch_tostring.hpp>
+     #include <string_view>
+     int main() { return static_cast<int>(Catch::Detail::stringify(std::string_view{\"x\"}).size()); }"
+    WAGGLE_CATCH2_HAS_STRING_VIEW_STRINGMAKER
+  )
+  cmake_pop_check_state()
+  if(NOT WAGGLE_CATCH2_HAS_STRING_VIEW_STRINGMAKER)
+    set_property(TARGET Catch2::Catch2 APPEND PROPERTY INTERFACE_COMPILE_DEFINITIONS CATCH_CONFIG_NO_CPP17_STRING_VIEW)
+  endif()
   if(PROJECT_IS_TOP_LEVEL)
     enable_testing()
   endif()
