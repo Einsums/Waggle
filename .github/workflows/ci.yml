@@ -36,6 +36,16 @@ jobs:
         if: runner.os == 'Linux'
         run: conda install -y -c conda-forge "clang 23.*"
 
+      - name: Start an mDNS responder
+        # Servers advertise themselves through the Avahi daemon, which the runner does not run.
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y avahi-daemon libavahi-client3
+          sudo systemctl start avahi-daemon
+          test -S /run/avahi-daemon/socket
+
       - name: Configure
         run: cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DWAGGLE_BUILD_TESTS=ON -DWAGGLE_BUILD_PYTHON=ON
 

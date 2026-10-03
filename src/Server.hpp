@@ -18,12 +18,9 @@
 
 #include "Consumer.hpp"
 #include "LogQueue.hpp"
+#include "Mdns.hpp"
 #include "RequestHandlers.hpp"
 #include "StringTable.hpp"
-
-#ifdef __APPLE__
-#    include <dns_sd.h>
-#endif
 
 WAGGLE_NAMESPACE_BEGIN
 
@@ -150,9 +147,8 @@ class WAGGLE_EXPORT Server {
     std::mutex              _published_mutex;
     std::deque<std::string> _published;
 
-#ifdef __APPLE__
-    DNSServiceRef _mdns_ref = nullptr;
-#endif
+    /// The server's advertisement on the network, withdrawn when the server stops.
+    std::unique_ptr<MdnsAdvertisement> _mdns;
 };
 
 WAGGLE_NAMESPACE_END

@@ -35,7 +35,6 @@ from .model import (
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 19216
-#: The service type ``Server::register_mdns`` advertises (macOS only, through Bonjour).
 #: Service types servers advertise over mDNS: the current one, and the one servers used before the
 #: profiler became Waggle, which the viewer still finds.
 MDNS_SERVICES = ("_waggle._tcp.local.", "_einsums-profile._tcp.local.")

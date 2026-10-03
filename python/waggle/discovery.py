@@ -3,8 +3,9 @@
 
 """Finding profiler servers over mDNS, when the optional ``zeroconf`` package is installed.
 
-Only macOS servers advertise themselves (``Server::register_mdns`` uses Bonjour), so on
-Linux this finds remote Macs at most; the app always tries the default port as well.
+Servers advertise through their platform's responder: Bonjour on macOS, the Avahi daemon on
+Linux, and the DNS-SD service of Windows 10 1809 and later. A server on a machine with none of these
+is not found here; the app always tries the default port as well.
 """
 
 from __future__ import annotations

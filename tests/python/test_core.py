@@ -248,3 +248,38 @@ def test_the_viewer_reads_a_programs_allocation_track(tmp_path):
     finally:
         program.stdin.close()
         program.wait(timeout=60)
+
+
+@pytest.mark.skipif(
+    sys.platform.startswith("linux") and not os.path.exists("/run/avahi-daemon/socket"),
+    reason="Linux advertises through the Avahi daemon, which is not running",
+)
+def test_a_server_advertises_itself_to_the_viewer():
+    # End to end: the program's server advertises over mDNS, and the viewer's browser finds it by
+    # the port it listens on.
+    pytest.importorskip("zeroconf", reason="the viewer finds servers through python-zeroconf")
+    import queue
+    import socket
+
+    from waggle.discovery import ServerBrowser
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    env = dict(os.environ, WAGGLE_SERVER="1", WAGGLE_PORT=str(port), WAGGLE_REPORT="0")
+    script = "import sys, waggle\nwaggle.set_enabled(True)\nprint('ready', flush=True)\nsys.stdin.read()\n"
+    program = subprocess.Popen([sys.executable, "-c", script], env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    found: queue.Queue = queue.Queue()
+    browser = ServerBrowser(lambda host, found_port, exe: found.put((host, found_port, exe)))
+    try:
+        assert program.stdout.readline().strip() == "ready"
+        assert browser.start()
+        while True:
+            host, found_port, exe = found.get(timeout=30)  # raises queue.Empty if never found
+            if found_port == port:
+                break
+        assert host == "127.0.0.1" and exe.startswith("python")
+    finally:
+        browser.stop()
+        program.stdin.close()
+        program.wait(timeout=60)

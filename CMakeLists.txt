@@ -34,6 +34,7 @@ add_library(
   src/CounterBackend.cpp
   src/Diagnostics.cpp
   src/Duplicates.cpp
+  src/Mdns.cpp
   src/Server.cpp
   src/Settings.cpp
   src/Snapshot.cpp

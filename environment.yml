@@ -13,4 +13,6 @@ dependencies:
   - apiary >=1.1,<2
   - pytest
   - textual
+  # the viewer's discovery of servers over mDNS
+  - zeroconf
   - pre-commit

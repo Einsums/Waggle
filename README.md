@@ -130,7 +130,9 @@ ctest --test-dir build
 ```
 
 Waggle builds and is tested on Linux, macOS and Windows.
-On macOS the viewer finds running programs over mDNS; on Linux and Windows it connects by host and port.
+A program's server advertises itself over mDNS, so the viewer finds it without being told the port (the viewer needs the `zeroconf` package for this).
+The advertising uses each platform's own responder: Bonjour on macOS, the Avahi daemon on Linux, and the DNS-SD service of Windows 10 1809 and later.
+Where none is running, the server still listens and the viewer connects by host and port.
 
 ## License
 

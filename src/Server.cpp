@@ -912,42 +912,25 @@ void Server::process_request(socket_t fd, std::string const &line) {
 }
 
 void Server::register_mdns(uint16_t port) {
-#ifdef __APPLE__
-    // Build TXT record with executable name, PID, and start time
-    TXTRecordRef txt;
-    TXTRecordCreate(&txt, 0, nullptr);
-    TXTRecordSetValue(&txt, "exe", static_cast<uint8_t>(s_executable_name.size()), s_executable_name.c_str());
-    auto pid_str = std::to_string(getpid());
-    TXTRecordSetValue(&txt, "pid", static_cast<uint8_t>(pid_str.size()), pid_str.c_str());
-    TXTRecordSetValue(&txt, "start", static_cast<uint8_t>(s_start_time.size()), s_start_time.c_str());
-
-    // Service name: "exe-PID" to distinguish multiple instances
-    std::string service_name = s_executable_name + "-" + pid_str;
-
-    DNSServiceErrorType err = DNSServiceRegister(&_mdns_ref, 0, 0, service_name.c_str(), "_waggle._tcp", nullptr, nullptr, htons(port),
-                                                 TXTRecordGetLength(&txt), TXTRecordGetBytesPtr(&txt), nullptr, nullptr);
-
-    TXTRecordDeallocate(&txt);
-
-    if (err == kDNSServiceErr_NoError) {
-        diagnostic(DiagnosticLevel::Info, fmt::format("Profile server: registered mDNS service '{}' on port {}", service_name, port));
-    } else {
-        diagnostic(DiagnosticLevel::Warning, fmt::format("Profile server: mDNS registration failed (error {})", static_cast<int>(err)));
-        _mdns_ref = nullptr;
-    }
+#ifdef _WIN32
+    auto const pid = std::to_string(GetCurrentProcessId());
 #else
-    (void)port;
+    auto const pid = std::to_string(getpid());
 #endif
+    // "exe-PID" tells instances of one program apart.
+    _mdns = std::make_unique<MdnsAdvertisement>(MdnsAdvertisement::Service{
+        .name = s_executable_name + "-" + pid,
+        .type = "_waggle._tcp",
+        .port = port,
+        .txt  = {{"exe", s_executable_name}, {"pid", pid}, {"start", s_start_time}},
+    });
 }
 
 void Server::unregister_mdns() {
-#ifdef __APPLE__
-    if (_mdns_ref) {
-        DNSServiceRefDeallocate(_mdns_ref);
-        _mdns_ref = nullptr;
+    if (_mdns != nullptr) {
+        _mdns.reset();
         diagnostic(DiagnosticLevel::Info, "Profile server: unregistered mDNS service");
     }
-#endif
 }
 
 void Server::export_session(std::string const &path, std::string const &label,
