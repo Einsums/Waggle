@@ -15,6 +15,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <iostream>
 #include <iterator>
@@ -341,8 +342,11 @@ struct WAGGLE_EXPORT Profiler {
             } else {
                 shutdown();
             }
+        } catch (std::exception const &e) {
+            // Exiting: stderr is all that is left, and nothing may leave a destructor.
+            std::fprintf(stderr, "waggle: could not finish at exit: %s\n", e.what());
         } catch (...) {
-            // Exiting: there is no one left to tell.
+            std::fprintf(stderr, "waggle: could not finish at exit\n");
         }
     }
 

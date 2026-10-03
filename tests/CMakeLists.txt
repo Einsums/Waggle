@@ -65,6 +65,8 @@ add_test(NAME ${WAGGLE_TEST_PREFIX}ExitWithoutFinalize COMMAND waggle_ExitWithou
 set_tests_properties(
   ${WAGGLE_TEST_PREFIX}ExitWithoutFinalize
   PROPERTIES ENVIRONMENT "WAGGLE_REPORT=true;WAGGLE_REPORT_FILE=${_exit_report};WAGGLE_SAVE=${_exit_session}"
+             # What the exit path could not do, it says on stderr; fail on it, so the output shows.
+             FAIL_REGULAR_EXPRESSION "waggle: could not"
              FIXTURES_REQUIRED waggle_exit_clean
              FIXTURES_SETUP waggle_exit_outputs
              TIMEOUT 300
