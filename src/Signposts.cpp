@@ -58,8 +58,11 @@ void Profiler::signpost_begin(uint32_t site_id, uint32_t name_id, uint32_t depth
     }
     Site const     site = _sites.get(site_id);
     os_log_t const log  = log_for(_domains.name(site.domain));
-    t_logs[depth]       = log;
+    // Its end is emitted only if this was: recording can start while a zone is open (Instruments
+    // arms itself just after launching a program), and an end without its begin is noise.
+    t_logs[depth] = nullptr;
     if (os_signpost_enabled(log)) {
+        t_logs[depth] = log;
         // Strings are never removed from the table, so the name stays valid.
         std::string const &name = _strings.get(name_id != 0 ? name_id : site.name_id);
         os_signpost_interval_begin(log, os_signpost_id_make_with_pointer(log, &t_logs[depth]), "zone", "%{public}s", name.c_str());
@@ -72,9 +75,7 @@ void Profiler::signpost_end(uint32_t depth) {
     }
     os_log_t const log = t_logs[depth];
     t_logs[depth]      = nullptr;
-    if (os_signpost_enabled(log)) {
-        os_signpost_interval_end(log, os_signpost_id_make_with_pointer(log, &t_logs[depth]), "zone");
-    }
+    os_signpost_interval_end(log, os_signpost_id_make_with_pointer(log, &t_logs[depth]), "zone"); // checks it is still recording
 }
 
 #else
