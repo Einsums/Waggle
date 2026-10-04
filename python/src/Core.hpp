@@ -91,6 +91,8 @@ inline void node_json(std::string &out, waggle_node const *node) {
     out += ",\"exclusive_max_ns\":" + std::to_string(stats.exclusive_max_ns);
     out += ",\"mem_alloc_bytes\":" + std::to_string(stats.mem_alloc_bytes);
     out += ",\"mem_free_bytes\":" + std::to_string(stats.mem_free_bytes);
+    out += ",\"energy_nj\":" + std::to_string(stats.energy_nj);
+    out += ",\"e_core_energy_nj\":" + std::to_string(stats.e_core_energy_nj);
     out += ",\"annotations\":{";
     struct Annotations {
         std::string *out;

@@ -64,7 +64,7 @@ Every setting by name (as ``waggle_config_set``, ``waggle.configure`` and ``wagg
     * - ``sources``
       - ``WAGGLE_SOURCES``
       - empty
-      - Optional instruments to turn on, comma-separated: ``counters``, ``openmp``, ``signposts``.
+      - Optional instruments to turn on, comma-separated: ``counters``, ``energy``, ``openmp``, ``signposts``.
 
 Booleans accept ``1``, ``true``, ``on``, ``yes`` and ``0``, ``false``, ``off``, ``no``.
 

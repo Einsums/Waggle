@@ -307,6 +307,8 @@ typedef struct waggle_node_stats { /* NOLINT(modernize-use-using,readability-ide
     int64_t  mem_free_bytes;
     int64_t  mem_peak_bytes;
     uint64_t histogram[WAGGLE_HISTOGRAM_BUCKETS];
+    uint64_t energy_nj;        /* with the energy source: energy used while the zone was the innermost open */
+    uint64_t e_core_energy_nj; /* of it, on efficiency cores */
 } waggle_node_stats;
 
 /** Fill `stats` up to stats->size bytes. */

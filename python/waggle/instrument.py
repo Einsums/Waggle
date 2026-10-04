@@ -203,6 +203,9 @@ class Node:
     exclusive_max_ns: int
     mem_alloc_bytes: int
     mem_free_bytes: int
+    #: Energy in nanojoules, and the part of it on efficiency cores, with the ``energy`` source.
+    energy_nj: int = 0
+    e_core_energy_nj: int = 0
     annotations: dict[str, str] = field(default_factory=dict)
     children: list[Node] = field(default_factory=list)
 

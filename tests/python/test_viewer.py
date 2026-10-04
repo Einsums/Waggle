@@ -52,6 +52,8 @@ def test_node_round_trips_through_its_wire_form():
         annotations={"flops": {"avg": 10, "min": 10, "max": 10}},
         mem_alloc_bytes=1024,
         mem_peak_bytes=512,
+        energy_nj=4_000_000,
+        e_core_energy_nj=1_000_000,
         histogram={"1us": 2},
     )
     assert parse_node(json.loads(json.dumps(node_to_dict(original)))) == original

@@ -28,6 +28,10 @@ Waggle builds and is tested on Linux, macOS and Windows; what differs is what ea
       - perf: cycles, instructions, cache and branch misses
       - XNU: cycles and instructions, P/E split
       - not yet
+    * - ``energy`` source
+      - no (RAPL is per package)
+      - yes, per thread
+      - no
     * - ``openmp`` source
       - LLVM or Intel runtime
       - LLVM runtime

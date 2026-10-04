@@ -21,7 +21,7 @@ On by default, to ``profile.txt``, when the program opened at least one zone.
 ``WAGGLE_REPORT_APPEND=1``
     Append to the file rather than replace it, keeping every run.
 ``WAGGLE_REPORT_DETAILED=1``
-    Add each zone's minimum, maximum and mean, and its counters.
+    Add each zone's minimum, maximum and mean, its counters, and its energy.
 
 The report starts with anything that limited what was recorded (a collector copy switched off, a source that records nothing), then gives each thread's call tree, and ends with what the profiler itself cost.
 ``waggle::print_report()`` prints it at any time; ``waggle::export_json(path)`` writes the aggregated tree as JSON.

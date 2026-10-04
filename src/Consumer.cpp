@@ -15,6 +15,8 @@
 #include <unordered_set>
 #include <vector>
 
+#include "Energy.hpp"
+
 WAGGLE_NAMESPACE_BEGIN
 
 Consumer::Consumer(StringTable &strings, SiteTable const &sites) : _strings(strings), _sites(sites), _other_id(strings.intern("(other)")) {
@@ -152,9 +154,53 @@ void Consumer::resolve_device_spans() {
     });
 }
 
-void Consumer::register_thread(uint32_t thread_id, std::shared_ptr<EventRingBuffer> rb) {
+void Consumer::register_thread(uint32_t thread_id, std::shared_ptr<EventRingBuffer> rb, uint64_t kernel_thread) {
     std::scoped_lock const lock(_reg_mutex);
-    _registrations.push_back({.thread_id = thread_id, .ring_buffer = std::move(rb)});
+    _registrations.push_back({.thread_id = thread_id, .ring_buffer = std::move(rb), .kernel_thread = kernel_thread});
+}
+
+void Consumer::sample_energy(ThreadRegistration const &reg) {
+    ThreadEnergy now;
+    if (!read_thread_energy(reg.kernel_thread, now)) {
+        return;
+    }
+    _energy_reads.fetch_add(1, std::memory_order_relaxed);
+    auto &thread = _energy[reg.thread_id];
+    // The first reading is the baseline: energy before the source was on is nobody's.
+    // A sample waits for the thread's next event, which says what was open when it was read: a
+    // zone with nothing inside is written only when it closes. A thread that waits uses no energy,
+    // so it makes no samples; one zone running for seconds makes many, all its own, so past a
+    // bound they are merged.
+    if (thread.read && now.total_nj > thread.total_nj) {
+        EnergySample const sample{.ticks     = TickClock::now(),
+                                  .total_nj  = now.total_nj - thread.total_nj,
+                                  .e_core_nj = now.e_core_nj >= thread.e_core_nj ? now.e_core_nj - thread.e_core_nj : 0};
+        if (thread.pending.size() < kMaxPendingEnergySamples) {
+            thread.pending.push_back(sample);
+        } else {
+            auto &last = thread.pending.back();
+            last.ticks = sample.ticks;
+            last.total_nj += sample.total_nj;
+            last.e_core_nj += sample.e_core_nj;
+        }
+    }
+    thread.total_nj  = now.total_nj;
+    thread.e_core_nj = now.e_core_nj;
+    thread.read      = true;
+}
+
+void Consumer::credit_energy(uint32_t thread_id, ThreadState &ts, uint64_t ticks) {
+    auto it = _energy.find(thread_id);
+    if (it == _energy.end()) {
+        return;
+    }
+    auto &pending = it->second.pending;
+    while (!pending.empty() && pending.front().ticks < ticks) {
+        AggNode *node = ts.stack.empty() || ts.stack.back().node == nullptr ? &ts.root : ts.stack.back().node;
+        node->energy_nj += pending.front().total_nj;
+        node->e_core_energy_nj += pending.front().e_core_nj;
+        pending.pop_front();
+    }
 }
 
 auto Consumer::dropped_count() const -> uint64_t {
@@ -195,6 +241,13 @@ void Consumer::shutdown() {
         _thread.join();
     // Final drain under exclusive lock
     drain_all();
+    // Energy still waiting for an event that will not come goes to the zone open at the end.
+    std::unique_lock const lock(_tree_mutex);
+    for (auto &[thread_id, thread] : _energy) {
+        if (auto ts = _threads.find(thread_id); ts != _threads.end()) {
+            credit_energy(thread_id, ts->second, std::numeric_limits<uint64_t>::max());
+        }
+    }
 }
 
 void Consumer::flush() {
@@ -206,6 +259,8 @@ namespace {
 
 /// Clear what @p node has recorded, keeping where it was entered and its children.
 void clear_statistics(AggNode &node) {
+    node.energy_nj            = 0;
+    node.e_core_energy_nj     = 0;
     node.call_count           = 0;
     node.total_exclusive      = ns{0};
     node.total_exclusive_mean = 0.0;
@@ -265,6 +320,10 @@ void Consumer::reset() {
 
     _timeline.clear();
     _timeline_next = 0;
+    // Energy is credited afresh; the readings stay as the baselines.
+    for (auto &[id, thread] : _energy) {
+        thread.pending.clear();
+    }
     // The curve starts again; what is still allocated stays allocated.
     _memory.clear();
     _memory_next = 0;
@@ -308,10 +367,13 @@ void Consumer::consumer_loop() {
 
 size_t Consumer::drain_all() {
     // Return early if every ring is empty, so an idle process skips the snapshot and the tree lock.
+    bool const                      energy = _energy_on.load(std::memory_order_relaxed);
     std::vector<ThreadRegistration> regs;
     {
         std::scoped_lock const lock(_reg_mutex);
-        if (std::ranges::all_of(_registrations, [](ThreadRegistration const &r) { return r.ring_buffer->empty(); })) {
+        // Sampling energy goes on while threads record nothing: a long zone with nothing inside it
+        // uses energy without writing an event until it closes.
+        if (!energy && std::ranges::all_of(_registrations, [](ThreadRegistration const &r) { return r.ring_buffer->empty(); })) {
             return 0;
         }
         regs = _registrations;
@@ -324,6 +386,11 @@ size_t Consumer::drain_all() {
     std::unique_lock const lock(_tree_mutex);
     size_t                 drained = 0;
     for (auto &reg : regs) {
+        // Read before draining: every event the thread wrote before the reading is in the ring now,
+        // so the zone open at the reading is known once the drain reaches it.
+        if (energy) {
+            sample_energy(reg);
+        }
         drained += reg.ring_buffer->drain([&](Event const &evt) { process_event(reg.thread_id, evt); });
     }
     resolve_device_spans();
@@ -351,6 +418,10 @@ void Consumer::process_event(uint32_t thread_id, Event const &evt) {
         if (auto name = _thread_names.find(thread_id); name != _thread_names.end()) {
             ts.name = name->second;
         }
+    }
+    // Energy read before this event belongs to the zone open then.
+    if (!_energy.empty()) {
+        credit_energy(thread_id, ts, evt.ticks);
     }
 
     switch (evt.type) {
@@ -387,6 +458,10 @@ void Consumer::process_event(uint32_t thread_id, Event const &evt) {
         push.name_id = evt.name_id;
         push.depth   = evt.depth;
         process_push(ts, push);
+        // Energy read while it was open is its own, though it was written only as it closed.
+        if (!_energy.empty()) {
+            credit_energy(thread_id, ts, evt.zone.end_ticks);
+        }
         Event pop{};
         pop.ticks = evt.zone.end_ticks;
         pop.type  = EventType::Pop;

@@ -97,6 +97,9 @@ def node_details(
             f"freed: {format_bytes(node.mem_free_bytes)} ({node.mem_free_count} calls)    "
             f"peak: {format_bytes(node.mem_peak_bytes)}    live: {format_bytes(node.mem_current_bytes)}"
         )
+    if node.energy_nj:
+        e_core = 100.0 * node.e_core_energy_nj / node.energy_nj
+        lines.append(f"  [bold]Energy:[/bold]  {node.energy_nj / 1e6:.3f} mJ    {e_core:.0f}% on efficiency cores")
     if node.annotations:
         lines.append("  [bold]Annotations:[/bold]")
         lines += [f"    {escape(k)} = {_annotation_text(v)}" for k, v in node.annotations.items()]

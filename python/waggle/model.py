@@ -43,6 +43,9 @@ class ProfileNode:
     mem_free_bytes: int = 0
     mem_current_bytes: int = 0
     mem_peak_bytes: int = 0
+    #: Energy in nanojoules, and the part of it on efficiency cores, with the ``energy`` source.
+    energy_nj: int = 0
+    e_core_energy_nj: int = 0
     #: Per-call duration histogram, bucket label -> count.
     histogram: dict[str, int] = field(default_factory=dict)
     children: list[ProfileNode] = field(default_factory=list)
@@ -312,6 +315,7 @@ LOG_LEVEL_NAMES = {0: "TRACE", 1: "DEBUG", 2: "INFO", 3: "WARN", 4: "ERROR", 5: 
 
 def parse_node(data: dict[str, Any]) -> ProfileNode:
     mem = data.get("memory") or {}
+    energy = data.get("energy") or {}
     histogram: dict[str, int] = {}
     raw_hist = data.get("histogram")
     if isinstance(raw_hist, dict):
@@ -339,6 +343,8 @@ def parse_node(data: dict[str, Any]) -> ProfileNode:
         mem_free_bytes=mem.get("free_bytes", 0),
         mem_current_bytes=mem.get("current_bytes", 0),
         mem_peak_bytes=mem.get("peak_bytes", 0),
+        energy_nj=energy.get("nj", 0),
+        e_core_energy_nj=energy.get("e_core_nj", 0),
         histogram=histogram,
         children=[parse_node(child) for child in data.get("children", [])],
     )
@@ -429,6 +435,8 @@ def node_to_dict(node: ProfileNode) -> dict[str, Any]:
             "current_bytes": node.mem_current_bytes,
             "peak_bytes": node.mem_peak_bytes,
         }
+    if node.energy_nj:
+        data["energy"] = {"nj": node.energy_nj, "e_core_nj": node.e_core_energy_nj}
     if node.histogram:
         data["histogram"] = node.histogram
     return data

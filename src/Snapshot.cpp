@@ -38,6 +38,8 @@ void copy_node(AggNode const &from, waggle_node &to, DomainTable const &domains)
     s.mem_alloc_bytes   = from.mem_alloc_bytes;
     s.mem_free_bytes    = from.mem_free_bytes;
     s.mem_peak_bytes    = from.mem_peak_bytes;
+    s.energy_nj         = from.energy_nj;
+    s.e_core_energy_nj  = from.e_core_energy_nj;
     std::copy_n(from.histogram, WAGGLE_HISTOGRAM_BUCKETS, s.histogram);
 
     for (auto const &[key, value] : from.annotations) {
@@ -76,6 +78,8 @@ void merge_node(waggle_node const &from, waggle_node &into) {
     a.mem_alloc_bytes += b.mem_alloc_bytes;
     a.mem_free_bytes += b.mem_free_bytes;
     a.mem_peak_bytes = std::max(a.mem_peak_bytes, b.mem_peak_bytes);
+    a.energy_nj += b.energy_nj;
+    a.e_core_energy_nj += b.e_core_energy_nj;
     for (int i = 0; i < WAGGLE_HISTOGRAM_BUCKETS; ++i) {
         a.histogram[i] += b.histogram[i];
     }

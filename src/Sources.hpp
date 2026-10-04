@@ -41,6 +41,11 @@ WAGGLE_EXPORT auto status() -> SourceStatus;
 WAGGLE_EXPORT void note_thread(bool opened);
 } // namespace counters
 
+namespace energy {
+/// The energy source: each zone's energy, sampled from the platform's per-thread estimate (macOS).
+WAGGLE_EXPORT auto status() -> SourceStatus;
+} // namespace energy
+
 namespace signposts {
 /// The signposts source: every zone also emitted as an os_signpost interval, so Instruments shows
 /// them beside its own tracks, one category per library. macOS only.

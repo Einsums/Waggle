@@ -48,6 +48,14 @@ set_tests_properties(${WAGGLE_TEST_PREFIX}Counters PROPERTIES ENVIRONMENT "WAGGL
 add_test(NAME ${WAGGLE_TEST_PREFIX}CountersSource COMMAND waggle_Counters_test "[source]")
 set_tests_properties(${WAGGLE_TEST_PREFIX}CountersSource PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false;WAGGLE_SOURCES=counters" TIMEOUT 300)
 
+# The energy source, asked for in the environment; where there is no per-thread energy it checks
+# the source says why, and skips (Catch2's exit code 4).
+add_executable(waggle_Energy_test unit/Energy.cpp)
+target_link_libraries(waggle_Energy_test PRIVATE Waggle::internal Catch2::Catch2WithMain)
+add_dependencies(waggle_tests waggle_Energy_test)
+add_test(NAME ${WAGGLE_TEST_PREFIX}Energy COMMAND waggle_Energy_test)
+set_tests_properties(${WAGGLE_TEST_PREFIX}Energy PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false;WAGGLE_SOURCES=energy" TIMEOUT 300 SKIP_RETURN_CODE 4)
+
 # The OpenMP source against a runtime with OMPT: LLVM's libomp, which also serves GCC-compiled code
 # through its GOMP entry points. So the test compiles with the compiler's OpenMP flag but links
 # libomp itself, never GCC's libgomp, which has no OMPT. MSVC's runtime has none either.

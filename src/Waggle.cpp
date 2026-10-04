@@ -20,6 +20,7 @@
 
 #include "Detail/JsonEscape.hpp"
 #include "Diagnostics.hpp"
+#include "Energy.hpp"
 #include "Profiler.hpp"
 #include "Sources.hpp"
 
@@ -171,6 +172,9 @@ void Profiler::apply(Settings const &s) {
     set_enabled(s.record);
     _counters_wanted.store(source_requested(s, "counters"), std::memory_order_release);
     _signposts_wanted.store(source_requested(s, "signposts"), std::memory_order_release);
+    // Energy is sampled by the consumer for every recording thread, whenever it was asked for.
+    std::string why_not;
+    _consumer->set_energy(source_requested(s, "energy") && energy_available(why_not));
     _consumer->set_max_distinct_children(s.max_distinct_children);
     if (s.server) {
         start_server(static_cast<uint16_t>(s.port));
@@ -361,7 +365,7 @@ auto Profiler::register_thread() -> ThreadChannel & {
     }
 
     // The consumer drains the ring, and shares the channel's ownership through it.
-    _consumer->register_thread(tid, std::shared_ptr<EventRingBuffer>(channel, &channel->ring));
+    _consumer->register_thread(tid, std::shared_ptr<EventRingBuffer>(channel, &channel->ring), kernel_thread_id());
 
     // Auto-name the thread, the first to register "main", unless the program named it already.
     static std::atomic<bool> first_thread{true};
@@ -746,6 +750,10 @@ void Profiler::print_node_recursive(std::ostream &os, AggNode const *n, double /
                     counters += fmt::format(" {}(tot={},min={},max={},avg={:.1f})", c.first, tot, mn, mx, avg);
                 }
                 os << counters << '\n';
+            }
+            if (node->energy_nj > 0) {
+                line(os, "{:6}   Energy: {:.3f} mJ, {:.0f}% on efficiency cores", "", static_cast<double>(node->energy_nj) / 1e6,
+                     100.0 * static_cast<double>(node->e_core_energy_nj) / static_cast<double>(node->energy_nj));
             }
             // Show numeric annotation stats in detailed mode
             if (!node->numeric_annotations.empty()) {

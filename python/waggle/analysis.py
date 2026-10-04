@@ -206,6 +206,8 @@ def _merge_into(total: ProfileNode, node: ProfileNode) -> None:
     total.mem_free_bytes += node.mem_free_bytes
     total.mem_current_bytes += node.mem_current_bytes
     total.mem_peak_bytes = max(total.mem_peak_bytes, node.mem_peak_bytes)
+    total.energy_nj += node.energy_nj
+    total.e_core_energy_nj += node.e_core_energy_nj
     for key, value in node.annotations.items():
         old = total.annotations.get(key)
         if isinstance(value, dict) and isinstance(old, dict):
@@ -247,6 +249,8 @@ def aggregate_flat(nodes: list[ProfileNode]) -> list[ProfileNode]:
                 mem_free_bytes=node.mem_free_bytes,
                 mem_current_bytes=node.mem_current_bytes,
                 mem_peak_bytes=node.mem_peak_bytes,
+                energy_nj=node.energy_nj,
+                e_core_energy_nj=node.e_core_energy_nj,
             )
         else:
             _merge_into(total, node)

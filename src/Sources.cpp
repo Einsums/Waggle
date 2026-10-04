@@ -11,6 +11,7 @@
 
 #include "CounterBackend.hpp"
 #include "Duplicates.hpp"
+#include "Energy.hpp"
 #include "Profiler.hpp"
 
 WAGGLE_NAMESPACE_BEGIN
@@ -35,43 +36,81 @@ auto source_requested(Settings const &settings, std::string_view name) -> bool {
 }
 
 auto source_statuses() -> std::vector<SourceStatus> {
-    return {counters::status(), ompt::status(), signposts::status()};
+    return {counters::status(), energy::status(), ompt::status(), signposts::status()};
 }
 
-namespace counters {
 namespace {
-std::atomic<uint64_t> g_counting{0}; // threads whose counters opened
-std::atomic<uint64_t> g_refused{0};  // threads whose counters did not
-} // namespace
 
-void note_thread(bool opened) {
-    (opened ? g_counting : g_refused).fetch_add(1, std::memory_order_relaxed);
-}
+/// Threads that could and could not read, for one source.
+struct Openings {
+    std::atomic<uint64_t> opened{0};
+    std::atomic<uint64_t> refused{0};
+    void                  note(bool ok) { (ok ? opened : refused).fetch_add(1, std::memory_order_relaxed); }
+};
 
-auto status() -> SourceStatus {
-    SourceStatus status{.name = "counters", .state = "off", .detail = ""};
-    if (collector_inactive() || Profiler::gone() || !source_requested(Profiler::instance().settings(), "counters")) {
+/// A source read for each thread as it registers: off, active, unavailable (and why), or waiting
+/// for a thread to register.
+auto thread_source_status(char const *name, Openings const &openings, std::string const &active_detail, std::string const &why_not)
+    -> SourceStatus {
+    SourceStatus status{.name = name, .state = "off", .detail = ""};
+    if (collector_inactive() || Profiler::gone() || !source_requested(Profiler::instance().settings(), name)) {
         return status;
     }
-    auto const &backend  = get_counter_backend();
-    auto const  counting = g_counting.load(std::memory_order_relaxed);
-    auto const  refused  = g_refused.load(std::memory_order_relaxed);
-    if (counting > 0) {
+    auto const opened  = openings.opened.load(std::memory_order_relaxed);
+    auto const refused = openings.refused.load(std::memory_order_relaxed);
+    if (opened > 0) {
         status.state  = "active";
-        status.detail = backend.describe();
+        status.detail = active_detail;
         if (refused > 0) {
-            status.detail += fmt::format("; {} thread(s) could not count: {}", refused, backend.why_not());
+            status.detail += fmt::format("; {} thread(s) could not read: {}", refused, why_not);
         }
     } else if (refused > 0) {
         status.state  = "unavailable";
-        status.detail = backend.why_not();
+        status.detail = why_not;
     } else {
         status.state  = "waiting";
-        status.detail = "no thread has recorded since it was asked for: a thread counts if the source was asked for when it first "
-                        "recorded, so set WAGGLE_SOURCES=counters in the environment, or configure Waggle before threads start";
+        status.detail = fmt::format("no thread has recorded since it was asked for: a thread reads if the source was asked for "
+                                    "when it first recorded, so set WAGGLE_SOURCES={} in the environment, or configure Waggle "
+                                    "before threads start",
+                                    name);
     }
     return status;
 }
+
+Openings g_counter_threads;
+
+} // namespace
+
+namespace counters {
+void note_thread(bool opened) {
+    g_counter_threads.note(opened);
+}
+
+auto status() -> SourceStatus {
+    auto const &backend = get_counter_backend();
+    return thread_source_status("counters", g_counter_threads, backend.describe(), backend.why_not());
+}
 } // namespace counters
+
+namespace energy {
+auto status() -> SourceStatus {
+    SourceStatus status{.name = "energy", .state = "off", .detail = ""};
+    if (collector_inactive() || Profiler::gone() || !source_requested(Profiler::instance().settings(), "energy")) {
+        return status;
+    }
+    if (std::string why; !energy_available(why)) {
+        status.state  = "unavailable";
+        status.detail = why;
+    } else if (Profiler::instance().consumer()->energy_reads() > 0) {
+        status.state  = "active";
+        status.detail = "XNU's per-thread estimate from the CPU's power model, updated every few milliseconds and sampled as "
+                        "the consumer drains; each change is credited to the zone open when it was read";
+    } else {
+        status.state  = "waiting";
+        status.detail = "no thread has been read yet";
+    }
+    return status;
+}
+} // namespace energy
 
 WAGGLE_NAMESPACE_END

@@ -48,6 +48,30 @@ A thread counts if the source was asked for when it first recorded.
 
 The viewer's ``M`` panel derives IPC and misses per thousand instructions from them, and the report's detailed form lists them per zone.
 
+energy
+======
+
+The energy each zone used, on macOS, and the share of it on the efficiency cores.
+
+.. code-block:: console
+
+    $ WAGGLE_SOURCES=energy WAGGLE_REPORT_DETAILED=1 ./myprogram
+
+The figure is XNU's per-thread estimate from the CPU's power model, in nanojoules: good for comparing zones, and work on performance and efficiency cores, but not a meter's reading.
+The kernel updates it every few milliseconds, not continuously, so Waggle samples it rather than reading it per zone: as the consumer drains, it reads every recording thread's energy, and credits each change to the zone that was open on that thread when it was read.
+A zone pays nothing for it; the consumer pays one read, about 160 ns, per thread per pass.
+
+What that means for the numbers:
+
+* A zone's energy is *exclusive*, as its time is: a parent's own energy excludes its children's.
+* A zone of about 100 ms or more gets a figure that is its own.
+  Shorter zones get their share over many calls, as a sampling profiler's would, rather than an exact figure each.
+* Energy a zone used in its last few milliseconds can arrive in the zone after it, once the kernel adds it.
+* A thread that waits uses next to nothing, so a zone that sleeps gets next to nothing.
+
+Every thread that records is read, whenever the source was asked for.
+Linux has no per-thread energy (its RAPL measures a whole processor package), and a virtual Mac estimates none; the source says so.
+
 openmp
 ======
 

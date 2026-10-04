@@ -15,7 +15,7 @@ The server writes JSON lines over TCP: one object per line, each with a ``type``
     Once, on connect: the process (``pid``, ``hostname``, ``executable``, ``executable_path``, ``start_time``), the libraries that called ``init`` (``clients``, each with ``name``, ``version``, ``git_commit``, ``git_branch``, ``git_dirty``, ``build_type``), collector copies switched off (``duplicates``, each with ``path`` and ``abi``), request handlers (``handlers``), sources and their states (``sources``, each with ``name``, ``state``, ``detail``), and the counters zones carry (``counters``).
 
 ``snapshot``
-    The call tree of every thread: ``threads`` maps a thread id to its ``name`` and ``children``, each a zone with ``name``, ``call_count``, ``exclusive_ms``, ``inclusive_ms``, ``exclusive_min_ms``, ``exclusive_max_ms``, ``stddev_ms``, ``file``, ``line``, ``function``, ``annotations``, ``counters``, ``histogram``, ``memory`` and its own ``children``.
+    The call tree of every thread: ``threads`` maps a thread id to its ``name`` and ``children``, each a zone with ``name``, ``call_count``, ``exclusive_ms``, ``inclusive_ms``, ``exclusive_min_ms``, ``exclusive_max_ms``, ``stddev_ms``, ``file``, ``line``, ``function``, ``annotations``, ``counters``, ``histogram``, ``memory``, ``energy`` (``nj`` and ``e_core_nj``, with the energy source) and its own ``children``.
     Also ``seq``, ``dropped`` (events lost to full rings), and the current ``handlers`` and ``sources``, which can change after ``meta``.
 
 ``timeline``

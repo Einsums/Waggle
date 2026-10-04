@@ -24,8 +24,10 @@ def test_the_settings_reference_names_every_setting_and_variable():
 
 
 def test_the_sources_guide_covers_every_source():
-    sources = set(re.findall(r'\.name = "([a-z]+)"', "".join(p.read_text() for p in (ROOT / "src").glob("*.cpp"))))
+    code = "".join(p.read_text() for p in (ROOT / "src").glob("*.cpp"))
+    # A source's status names it, directly or through the helper the per-thread sources share.
+    sources = set(re.findall(r'\.name = "([a-z]+)"', code)) | set(re.findall(r'thread_source_status\("([a-z]+)"', code))
     page = (ROOT / "docs" / "guides" / "sources.rst").read_text()
-    assert {"counters", "openmp", "signposts"} <= sources
+    assert {"counters", "energy", "openmp", "signposts"} <= sources
     missing = [s for s in sorted(sources) if f"\n{s}\n===" not in page]
     assert missing == [], f"docs/guides/sources.rst has no section for {missing}"

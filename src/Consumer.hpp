@@ -11,6 +11,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <limits>
 #include <map>
@@ -81,6 +82,12 @@ struct AggNode {
     int64_t  mem_free_bytes{0};
     int64_t  mem_current_bytes{0}; // alloc - free (net live bytes within zone)
     int64_t  mem_peak_bytes{0};    // high-water mark of mem_current_bytes
+
+    /// Energy used while this zone was the innermost open one, in nanojoules, and of it on
+    /// efficiency cores: the energy source's samples, each credited to the zone open when it was
+    /// taken. Exclusive, as time is; a parent's inclusive energy is its own and its children's.
+    uint64_t energy_nj{0};
+    uint64_t e_core_energy_nj{0};
 
     // Per-call log2 histogram: 21 buckets from 1us to ~2s (bucket i = [2^i us, 2^(i+1) us))
     static constexpr int kHistogramBuckets = 21;
@@ -193,7 +200,8 @@ struct ThreadState {
 // ---------------------- Thread registration info ----------------------
 struct ThreadRegistration {
     uint32_t                         thread_id;
-    std::shared_ptr<EventRingBuffer> ring_buffer; ///< Shared so it outlives a transient producer thread.
+    std::shared_ptr<EventRingBuffer> ring_buffer;      ///< Shared so it outlives a transient producer thread.
+    uint64_t                         kernel_thread{0}; ///< for reading the thread's energy; 0 where there is none
 };
 
 // ---------------------- Consumer thread ----------------------
@@ -207,7 +215,13 @@ class WAGGLE_EXPORT Consumer {
     Consumer &operator=(Consumer const &) = delete;
 
     /// Register a thread's ring buffer. Called once per thread on first push().
-    void register_thread(uint32_t thread_id, std::shared_ptr<EventRingBuffer> rb);
+    void register_thread(uint32_t thread_id, std::shared_ptr<EventRingBuffer> rb, uint64_t kernel_thread = 0);
+
+    /// Sample every recording thread's energy as the consumer drains, crediting each change to the
+    /// zone open on its thread when it was read (the energy source). Safe while the consumer runs.
+    void set_energy(bool on) { _energy_on.store(on, std::memory_order_relaxed); }
+    /// Energy readings taken so far, for the energy source's status.
+    [[nodiscard]] auto energy_reads() const -> uint64_t { return _energy_reads.load(std::memory_order_relaxed); }
 
     /// Set a human-readable name for a thread.
     void set_thread_name(uint32_t thread_id, std::string name);
@@ -353,6 +367,29 @@ class WAGGLE_EXPORT Consumer {
 
     // Zones whose Pop was among the dropped events (see unwind_stale_frames).
     std::atomic<uint64_t> _unmatched_zones{0};
+
+    /// The energy source. A thread's energy, read before its ring is drained, becomes a sample
+    /// stamped with the time it was read; the sample is credited to the zone open at that time once
+    /// the thread's events up to it are processed. Under _tree_mutex, except the switch and count.
+    struct EnergySample {
+        uint64_t ticks;
+        uint64_t total_nj;
+        uint64_t e_core_nj;
+    };
+    struct EnergyThread {
+        uint64_t                 total_nj{0};
+        uint64_t                 e_core_nj{0};
+        bool                     read{false};
+        std::deque<EnergySample> pending;
+    };
+    std::atomic<bool>                          _energy_on{false};
+    std::atomic<uint64_t>                      _energy_reads{0};
+    std::unordered_map<uint32_t, EnergyThread> _energy;
+
+    static constexpr size_t kMaxPendingEnergySamples = 4096;
+    void                    sample_energy(ThreadRegistration const &reg);
+    /// Credit @p thread's samples taken before @p ticks to its innermost open zone.
+    void credit_energy(uint32_t thread_id, ThreadState &ts, uint64_t ticks);
 
     // Tick callback (the server's), installed after the consumer thread starts.
     std::mutex            _tick_mutex;

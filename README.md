@@ -120,6 +120,7 @@ The viewer and the report say why a source that was asked for records nothing.
 | Source | What it records |
 | --- | --- |
 | `counters` | each zone's hardware counters: cycles, instructions, cache and branch misses through Linux perf; cycles and instructions, and the efficiency cores' share, through XNU on macOS |
+| `energy` | each zone's energy, and the efficiency cores' share of it, sampled from macOS's per-thread estimate at no cost to the zone |
 | `openmp` | each parallel region, each thread's share of it, and the barrier waits inside, through OMPT |
 | `signposts` | every zone also as an `os_signpost` interval, so Instruments shows it beside its own CPU, GPU and memory tracks (macOS) |
 

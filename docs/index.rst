@@ -10,7 +10,7 @@ Waggle
 Every library in a process records into one shared collector, so their zones form a single call tree, and a terminal viewer shows that tree live while the program runs.
 
 A zone costs a few nanoseconds when it is recorded, and less than one when recording is off, so libraries can leave their instrumentation in released code.
-Optional *sources* add what nobody wrote by hand: hardware counters, OpenMP parallel regions, and zones in Apple's Instruments.
+Optional *sources* add what nobody wrote by hand: hardware counters, each zone's energy, OpenMP parallel regions, and zones in Apple's Instruments.
 Device work (Metal command buffers today) is recorded with the times the GPU measured, on a timeline beside the host threads that submitted it.
 
 Waggle came out of `Einsums <https://github.com/Einsums/Einsums>`_, whose profiler it was, so that Einsums, Nectar and other libraries can profile one program together.

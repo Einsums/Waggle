@@ -521,6 +521,11 @@ void Server::write_node_json(std::string &out, AggNode const &n) { // NOLINT
         out += "}";
     }
 
+    // Energy, when the energy source credited this zone any.
+    if (n.energy_nj > 0) {
+        out += fmt::format(R"(,"energy":{{"nj":{},"e_core_nj":{}}})", n.energy_nj, n.e_core_energy_nj);
+    }
+
     // Per-call histogram
     {
         bool has_data = false;
