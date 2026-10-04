@@ -54,11 +54,18 @@ def signposts(trace: Path) -> list[dict]:
 def main(program: str) -> int:
     with tempfile.TemporaryDirectory() as tmp:
         trace = Path(tmp) / "signposts.trace"
-        run = subprocess.run(
-            ["xcrun", "xctrace", "record", "--template", "Logging", "--output", str(trace),
-             "--env", "WAGGLE_SOURCES=signposts", "--env", "WAGGLE_REPORT=false", "--launch", "--", program],
-            env=dict(os.environ), capture_output=True, text=True, timeout=300,
-        )  # fmt: skip
+        try:
+            run = subprocess.run(
+                ["xcrun", "xctrace", "record", "--template", "Logging", "--output", str(trace),
+                 "--env", "WAGGLE_SOURCES=signposts", "--env", "WAGGLE_REPORT=false", "--launch", "--", program],
+                env=dict(os.environ), capture_output=True, text=True, timeout=120,
+            )  # fmt: skip
+        except subprocess.TimeoutExpired as exc:
+            # Recording takes seconds; a recording that never ends is usually waiting for an
+            # authorization to use developer tools (DevToolsSecurity -enable gives it).
+            print(f"signposts: xctrace did not finish recording in {exc.timeout} s; is DevToolsSecurity enabled?")
+            print(exc.stdout or "", exc.stderr or "", sep="\n")
+            return 1
         if run.returncode != 0 or not trace.exists():
             print(run.stdout, run.stderr, sep="\n")
             return 1
