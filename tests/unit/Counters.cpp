@@ -13,6 +13,7 @@
 #include <array>
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
+#include <cstdlib>
 #include <string>
 #include <thread>
 
@@ -85,6 +86,13 @@ TEST_CASE("Linux perf reads a thread's counter group in one read", "[backend]") 
     bool       opened = false;
     auto const delta  = count_work(backend, 5'000'000, opened);
     INFO(backend.why_not());
+    // A kernel that lets a process count nothing (Ubuntu's perf_event_paranoid is 4) is a machine's
+    // policy, not a defect. Waggle's CI lowers it and sets WAGGLE_REQUIRE_COUNTERS, so there a
+    // refusal fails.
+    if (!opened && std::getenv("WAGGLE_REQUIRE_COUNTERS") == nullptr && // NOLINT(concurrency-mt-unsafe)
+        backend.why_not().find("perf_event_paranoid") != std::string::npos) {
+        SKIP(backend.why_not());
+    }
     REQUIRE(opened);
     CHECK(backend.slot_name(0) == "task-clock");
     CHECK(backend.slot_name(1) == "page-faults");

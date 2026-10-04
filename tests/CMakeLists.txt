@@ -39,6 +39,19 @@ foreach(_name IN LISTS _waggle_unit_tests)
   set_tests_properties(${WAGGLE_TEST_PREFIX}${_name} PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false" TIMEOUT 300)
 endforeach()
 
+# The public headers leave nothing in a file that includes them (see unit/HeaderOnly.cpp). nm reads
+# ELF and Mach-O; MSVC's objects need other tools, and MSVC builds have no nm.
+add_library(waggle_header_only OBJECT unit/HeaderOnly.cpp)
+target_link_libraries(waggle_header_only PRIVATE Waggle::waggle)
+add_dependencies(waggle_tests waggle_header_only)
+if(CMAKE_NM AND NOT MSVC)
+  add_test(NAME ${WAGGLE_TEST_PREFIX}HeaderEmitsNothing
+           COMMAND ${CMAKE_COMMAND} -DNM=${CMAKE_NM} -DOBJECT=$<TARGET_OBJECTS:waggle_header_only> -P
+                   ${CMAKE_CURRENT_SOURCE_DIR}/header_emits_nothing.cmake
+  )
+  set_tests_properties(${WAGGLE_TEST_PREFIX}HeaderEmitsNothing PROPERTIES PASS_REGULAR_EXPRESSION "header-only object defines nothing")
+endif()
+
 # Which thread is called "main" depends on which records first, so this runs in a process of its own.
 add_test(NAME ${WAGGLE_TEST_PREFIX}MainThreadName COMMAND waggle_Producer_test "[main-thread]")
 set_tests_properties(${WAGGLE_TEST_PREFIX}MainThreadName PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false" TIMEOUT 300 SKIP_RETURN_CODE 4)

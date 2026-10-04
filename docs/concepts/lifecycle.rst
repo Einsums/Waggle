@@ -23,7 +23,8 @@ The outputs (the report and the session file) are written once, by whichever com
 * the last ``waggle::finalize`` of the libraries that called ``init``;
 * the exit hook, for a program that never finalized.
 
-The exit hook runs from ``atexit``: one is registered by every module that includes ``<Waggle/Waggle.hpp>``, and the Python package registers one with Python's ``atexit``.
+The collector registers the exit hook with the process's exit handlers when it first records, and the Python package registers it again with Python's ``atexit``.
+The header registers nothing and defines nothing a compiler must emit, so a file compiled for another processor (a SIMD kernel built once per instruction set) can include it without leaving code behind that the linker might pick for every caller.
 It writes the outputs while the program's threads still run, which matters on Windows, where a process's other threads are stopped before DLLs unload.
 At exit, a program that never opened a zone writes no report.
 

@@ -7,6 +7,8 @@ on:
 env:
   # The mDNS discovery test fails rather than skips when a responder or zeroconf is missing.
   WAGGLE_REQUIRE_MDNS: "1"
+  # The Linux job lowers kernel.perf_event_paranoid, so the counters test must not skip there.
+  WAGGLE_REQUIRE_COUNTERS: "1"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

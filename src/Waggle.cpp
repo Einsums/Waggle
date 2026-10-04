@@ -5,10 +5,13 @@
 
 #include <Waggle/Config.hpp>
 
+#include <Waggle/Waggle.h>
+
 #include <fmt/color.h>
 #include <fmt/format.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -26,6 +29,7 @@
 #include "Sources.hpp"
 
 #if defined(_WIN32)
+#    include <corecrt_startup.h>
 #    include <io.h>
 #else
 #    include <unistd.h>
@@ -149,6 +153,26 @@ auto const &escape_json = detail::json_escape;
 
 } // namespace
 
+namespace {
+
+void exit_hook() noexcept {
+    waggle_at_exit();
+}
+
+/// Have the process's exit() call waggle_at_exit while the program's threads still run. On Windows
+/// a DLL's own atexit list runs only as the DLL unloads, after ExitProcess has stopped the other
+/// threads wherever they were, the consumer among them; _crt_atexit adds to the list exit() runs.
+/// Elsewhere the program's handlers and the collector's share one list, so atexit is that list.
+void register_exit_hook() {
+#ifdef _WIN32
+    _crt_atexit(&exit_hook);
+#else
+    std::atexit(&exit_hook);
+#endif
+}
+
+} // namespace
+
 Profiler::Profiler() : _consumer(std::make_unique<Consumer>(_strings, _sites)) {
     // Statics are destroyed in the reverse order of their construction, and a program that never
     // calls finalize leaves this destructor to drain the rings and stop the server at exit. So
@@ -167,6 +191,7 @@ Profiler::Profiler() : _consumer(std::make_unique<Consumer>(_strings, _sites)) {
     }
     apply(s);
     s_built.store(this, std::memory_order_release);
+    register_exit_hook();
 }
 
 void Profiler::apply(Settings const &s) {

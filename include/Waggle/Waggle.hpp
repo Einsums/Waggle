@@ -23,7 +23,6 @@
 #include <chrono>
 #include <concepts>
 #include <cstdint>
-#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <iterator>
@@ -772,22 +771,6 @@ inline void mem_free(int64_t bytes, void const *address = nullptr) {
         waggle_mem_free(address, bytes);
     }
 }
-
-// ---------------------- Exit ----------------------
-
-namespace detail {
-
-/// Registers waggle_at_exit with atexit, once in every module that includes this header. The
-/// program's own handlers run inside exit(), while its threads still run; the collector's unload
-/// comes later, and on Windows after the other threads have been stopped mid-step, which the
-/// profiler's consumer thread may have been inside.
-struct ExitHook {
-    ExitHook() noexcept { std::atexit(&ExitHook::run); }
-    static void run() noexcept { waggle_at_exit(); }
-};
-inline ExitHook const exit_hook;
-
-} // namespace detail
 
 // ---------------------- Snapshots and reset ----------------------
 
