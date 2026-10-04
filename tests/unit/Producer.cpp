@@ -17,6 +17,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
 #include <cstdint>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -131,4 +132,34 @@ TEST_CASE("The overhead figure is calibrated, not accumulated", "[profiler][over
     CHECK(pop > 0.0);
     CHECK(push < 1000.0);
     CHECK(pop < 1000.0);
+}
+
+// Run alone, in a process of its own: which thread records first is the point. The main thread was
+// named after whichever thread recorded first, so a worker that did was called "main".
+TEST_CASE("The main thread is named main, whichever thread records first", "[.][main-thread]") {
+    uint32_t worker_id = 0;
+    std::thread([&] {
+        waggle::ScopedZone const zone("main-thread: worker");
+        worker_id = waggle_current_thread_id();
+    }).join();
+    {
+        waggle::ScopedZone const zone("main-thread: main"); // written as it closes
+    }
+    uint32_t const main_id = waggle_current_thread_id();
+    waggle::flush();
+
+    std::string main_name;
+    std::string worker_name;
+    for (auto const &thread : waggle::Snapshot::take().threads()) {
+        if (thread.id == main_id) {
+            main_name = thread.name;
+        } else if (thread.id == worker_id) {
+            worker_name = thread.name;
+        }
+    }
+#ifdef _WIN32
+    SKIP("Windows does not say which thread is the main one; the first to record is called that");
+#endif
+    CHECK(main_name == "main");
+    CHECK(worker_name == "thread-" + std::to_string(worker_id));
 }

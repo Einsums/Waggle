@@ -5,9 +5,10 @@
 
 #include "Energy.hpp"
 
+#include "Process.hpp"
+
 #ifdef __APPLE__
 #    include <libproc.h>
-#    include <pthread.h>
 #    include <sys/sysctl.h>
 #    include <unistd.h>
 #endif
@@ -37,15 +38,9 @@ struct ThreadCounts {
 
 } // namespace
 
-auto kernel_thread_id() -> uint64_t {
-    uint64_t id = 0;
-    pthread_threadid_np(nullptr, &id);
-    return id;
-}
-
 auto read_thread_energy(uint64_t kernel_thread, ThreadEnergy &out) -> bool {
-    static pid_t const pid = getpid();
-    ThreadCounts       counts{};
+    static auto const pid = static_cast<pid_t>(process_id());
+    ThreadCounts      counts{};
     if (kernel_thread == 0 || proc_pidinfo(pid, kPidThreadCounts, kernel_thread, &counts, sizeof(counts)) <= 0 || counts.length < 1) {
         return false;
     }
@@ -73,10 +68,6 @@ auto energy_available(std::string &why) -> bool {
 }
 
 #else
-
-auto kernel_thread_id() -> uint64_t {
-    return 0;
-}
 
 auto read_thread_energy(uint64_t /*kernel_thread*/, ThreadEnergy & /*out*/) -> bool {
     return false;

@@ -60,7 +60,7 @@ class WAGGLE_EXPORT SettingsStore {
     Settings _settings;
 
     /// Which settings @ref configure has set, in @ref SettingsUpdate's member order.
-    bool _explicit[12]{}; // NOLINT(modernize-avoid-c-arrays)
+    bool _explicit[13]{}; // NOLINT(modernize-avoid-c-arrays)
 };
 
 WAGGLE_NAMESPACE_END

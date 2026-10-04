@@ -30,6 +30,7 @@
 #include "RingBuffer.hpp"
 #include "Sites.hpp"
 #include "StringTable.hpp"
+#include "Trace.hpp"
 
 WAGGLE_NAMESPACE_BEGIN
 
@@ -223,6 +224,11 @@ class WAGGLE_EXPORT Consumer {
     /// Energy readings taken so far, for the energy source's status.
     [[nodiscard]] auto energy_reads() const -> uint64_t { return _energy_reads.load(std::memory_order_relaxed); }
 
+    /// Write every zone from now on to a Perfetto trace at @p path, after closing any trace being
+    /// written; an empty path just closes it. The same path again changes nothing. Returns why the
+    /// file could not be written, or empty. Safe while the consumer runs.
+    auto set_trace(std::string const &path, DomainTable const &domains) -> std::string;
+
     /// Set a human-readable name for a thread.
     void set_thread_name(uint32_t thread_id, std::string name);
 
@@ -336,16 +342,20 @@ class WAGGLE_EXPORT Consumer {
     /// Drain every ring into the tree; returns how many events it processed.
     size_t drain_all();
     void   process_event(uint32_t thread_id, Event const &evt);
-    void   process_push(ThreadState &ts, Event const &evt);
+    void   process_push(ThreadState &ts, Event const &evt, uint32_t thread_id);
     void   process_pop(ThreadState &ts, Event const &evt, uint32_t thread_id);
-    void   process_annotate(ThreadState &ts, Event const &evt);
+    void   process_annotate(ThreadState &ts, Event const &evt, uint32_t thread_id);
     void   process_mem(ThreadState &ts, Event const &evt, uint32_t thread_id);
 
     /// Close, unrecorded, the frames deeper than @p depth: their Pops were dropped and will never come.
-    void unwind_stale_frames(ThreadState &ts, size_t depth);
+    /// @p ticks is when that was found out, which the trace gives as their end.
+    void unwind_stale_frames(ThreadState &ts, size_t depth, uint32_t thread_id, uint64_t ticks);
 
     StringTable     &_strings;
     SiteTable const &_sites;
+
+    /// The trace being written, if any, under _tree_mutex.
+    TraceWriter _trace{_strings, _sites};
 
     /// The id of "(other)", the node a parent's names fold into past its distinct-name cap.
     uint32_t _other_id;
@@ -465,6 +475,7 @@ class WAGGLE_EXPORT Consumer {
     /// The counter backend's slot names, read once, and whether it is active at all.
     bool                                      _counters_checked{false};
     std::array<std::string, kNumCounterSlots> _counter_names;
+    std::array<uint32_t, kNumCounterSlots>    _counter_name_ids{}; ///< the same, interned, for the trace
     TimePoint                                 _program_start{std::chrono::steady_clock::now()};
 };
 

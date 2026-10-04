@@ -21,6 +21,7 @@
 #include "Detail/JsonEscape.hpp"
 #include "Diagnostics.hpp"
 #include "Energy.hpp"
+#include "Process.hpp"
 #include "Profiler.hpp"
 #include "Sources.hpp"
 
@@ -176,6 +177,14 @@ void Profiler::apply(Settings const &s) {
     std::string why_not;
     _consumer->set_energy(source_requested(s, "energy") && energy_available(why_not));
     _consumer->set_max_distinct_children(s.max_distinct_children);
+    // "{pid}" keeps the processes of one run, MPI ranks say, from writing one file.
+    std::string trace = s.trace;
+    for (auto at = trace.find("{pid}"); at != std::string::npos; at = trace.find("{pid}", at)) {
+        trace.replace(at, 5, std::to_string(process_id()));
+    }
+    if (auto const why = _consumer->set_trace(trace, _domains); !why.empty()) {
+        diagnostic(DiagnosticLevel::Warning, why);
+    }
     if (s.server) {
         start_server(static_cast<uint16_t>(s.port));
     }
@@ -367,9 +376,11 @@ auto Profiler::register_thread() -> ThreadChannel & {
     // The consumer drains the ring, and shares the channel's ownership through it.
     _consumer->register_thread(tid, std::shared_ptr<EventRingBuffer>(channel, &channel->ring), kernel_thread_id());
 
-    // Auto-name the thread, the first to register "main", unless the program named it already.
+    // Auto-name the thread, unless the program named it already: the process's main thread "main",
+    // or where the platform cannot say which that is, the first thread to record.
     static std::atomic<bool> first_thread{true};
-    if (first_thread.exchange(false, std::memory_order_acq_rel)) {
+    bool const               first = first_thread.exchange(false, std::memory_order_acq_rel);
+    if (is_main_thread().value_or(first)) {
         _consumer->name_thread_if_unnamed(tid, "main");
     } else {
         _consumer->name_thread_if_unnamed(tid, "thread-" + std::to_string(tid));

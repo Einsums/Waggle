@@ -19,6 +19,7 @@ set(_waggle_unit_tests
     Snapshot
     Sources
     StringTable
+    Trace
 )
 
 add_custom_target(waggle_tests)
@@ -38,6 +39,10 @@ foreach(_name IN LISTS _waggle_unit_tests)
   set_tests_properties(${WAGGLE_TEST_PREFIX}${_name} PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false" TIMEOUT 300)
 endforeach()
 
+# Which thread is called "main" depends on which records first, so this runs in a process of its own.
+add_test(NAME ${WAGGLE_TEST_PREFIX}MainThreadName COMMAND waggle_Producer_test "[main-thread]")
+set_tests_properties(${WAGGLE_TEST_PREFIX}MainThreadName PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false" TIMEOUT 300 SKIP_RETURN_CODE 4)
+
 # Hardware counters: the backends directly, then the source with it asked for in the environment.
 add_executable(waggle_Counters_test unit/Counters.cpp)
 target_link_libraries(waggle_Counters_test PRIVATE Waggle::internal Catch2::Catch2WithMain)
@@ -47,6 +52,27 @@ add_test(NAME ${WAGGLE_TEST_PREFIX}Counters COMMAND waggle_Counters_test "[backe
 set_tests_properties(${WAGGLE_TEST_PREFIX}Counters PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false" TIMEOUT 300 SKIP_RETURN_CODE 4)
 add_test(NAME ${WAGGLE_TEST_PREFIX}CountersSource COMMAND waggle_Counters_test "[source]")
 set_tests_properties(${WAGGLE_TEST_PREFIX}CountersSource PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false;WAGGLE_SOURCES=counters" TIMEOUT 300)
+
+# The Perfetto trace, read by Perfetto's own trace_processor (the perfetto package, which downloads
+# it on first use). WAGGLE_REQUIRE_PERFETTO_TEST makes its absence an error, as CI does.
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+  execute_process(
+    COMMAND ${Python3_EXECUTABLE} -c "import perfetto.trace_processor"
+    RESULT_VARIABLE _waggle_no_perfetto
+    OUTPUT_QUIET ERROR_QUIET
+  )
+endif()
+if(Python3_Interpreter_FOUND AND _waggle_no_perfetto EQUAL 0)
+  add_test(NAME ${WAGGLE_TEST_PREFIX}Perfetto COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/perfetto_trace.py
+                                                    $<TARGET_FILE:waggle_Trace_test>
+  )
+  set_tests_properties(${WAGGLE_TEST_PREFIX}Perfetto PROPERTIES TIMEOUT 300 PASS_REGULAR_EXPRESSION "perfetto: [0-9]+ zones as expected")
+elseif(WAGGLE_REQUIRE_PERFETTO_TEST)
+  message(FATAL_ERROR "Waggle: the Perfetto test needs Python with the perfetto package (pip install perfetto)")
+else()
+  message(STATUS "Waggle: the Perfetto test needs Python with the perfetto package; not run")
+endif()
 
 # The energy source, asked for in the environment; where there is no per-thread energy it checks
 # the source says why, and skips (Catch2's exit code 4).

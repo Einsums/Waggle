@@ -117,6 +117,8 @@ void Consumer::process_device_span(Event const &evt, uint32_t submitter) {
     double const   start   = at_ms(evt.device.start_ns);
     double const   end     = std::max(start, at_ms(evt.device.end_ns));
 
+    _trace.device_span(evt.device.track, name_id, evt.device.start_ns, evt.device.end_ns, evt.device.token);
+
     DeviceRecord const rec{.track = evt.device.track, .name_id = name_id, .start_ms = start, .end_ms = end};
     if (_device_timeline.size() < kMaxTimelineEvents) {
         _device_timeline.push_back(rec);
@@ -172,7 +174,9 @@ void Consumer::sample_energy(ThreadRegistration const &reg) {
     // so it makes no samples; one zone running for seconds makes many, all its own, so past a
     // bound they are merged.
     if (thread.read && now.total_nj > thread.total_nj) {
-        EnergySample const sample{.ticks     = TickClock::now(),
+        uint64_t const ticks = TickClock::now();
+        _trace.energy(reg.thread_id, ticks, now.total_nj);
+        EnergySample const sample{.ticks     = ticks,
                                   .total_nj  = now.total_nj - thread.total_nj,
                                   .e_core_nj = now.e_core_nj >= thread.e_core_nj ? now.e_core_nj - thread.e_core_nj : 0};
         if (thread.pending.size() < kMaxPendingEnergySamples) {
@@ -233,6 +237,18 @@ void Consumer::name_thread_if_unnamed(uint32_t thread_id, std::string name) {
     _thread_names[thread_id] = std::move(name);
 }
 
+auto Consumer::set_trace(std::string const &path, DomainTable const &domains) -> std::string {
+    std::unique_lock const lock(_tree_mutex);
+    if (path == _trace.path() && _trace.is_open() == !path.empty()) {
+        return {};
+    }
+    if (path.empty()) {
+        _trace.close();
+        return {};
+    }
+    return _trace.open(path, domains);
+}
+
 void Consumer::shutdown() {
     if (!_running.exchange(false, std::memory_order_acq_rel))
         return;            // already shut down
@@ -248,6 +264,7 @@ void Consumer::shutdown() {
             credit_energy(thread_id, ts->second, std::numeric_limits<uint64_t>::max());
         }
     }
+    _trace.close();
 }
 
 void Consumer::flush() {
@@ -386,6 +403,10 @@ size_t Consumer::drain_all() {
     std::unique_lock const lock(_tree_mutex);
     size_t                 drained = 0;
     for (auto &reg : regs) {
+        if (_trace.is_open()) {
+            auto const name = _thread_names.find(reg.thread_id);
+            _trace.thread(reg.thread_id, reg.kernel_thread, name != _thread_names.end() ? name->second : std::string{});
+        }
         // Read before draining: every event the thread wrote before the reading is in the ring now,
         // so the zone open at the reading is known once the drain reaches it.
         if (energy) {
@@ -394,6 +415,7 @@ size_t Consumer::drain_all() {
         drained += reg.ring_buffer->drain([&](Event const &evt) { process_event(reg.thread_id, evt); });
     }
     resolve_device_spans();
+    _trace.maybe_flush();
     return drained;
 }
 
@@ -426,13 +448,13 @@ void Consumer::process_event(uint32_t thread_id, Event const &evt) {
 
     switch (evt.type) {
     case EventType::Push:
-        process_push(ts, evt);
+        process_push(ts, evt, thread_id);
         break;
     case EventType::Pop:
         process_pop(ts, evt, thread_id);
         break;
     case EventType::Annotate:
-        process_annotate(ts, evt);
+        process_annotate(ts, evt, thread_id);
         break;
     case EventType::SetThreadName:
         // Handled via set_thread_name() API, not through ring buffer events
@@ -446,6 +468,7 @@ void Consumer::process_event(uint32_t thread_id, Event const &evt) {
             _submissions.clear(); // spans that never came; theirs would be named after nothing anyway
         }
         _submissions[evt.device.token] = ts.stack.empty() ? 0 : ts.stack.back().name_id;
+        _trace.submit(thread_id, evt.ticks, evt.device.token);
         break;
     case EventType::DeviceSpan:
         break; // handled above
@@ -457,7 +480,7 @@ void Consumer::process_event(uint32_t thread_id, Event const &evt) {
         push.site_id = evt.site_id;
         push.name_id = evt.name_id;
         push.depth   = evt.depth;
-        process_push(ts, push);
+        process_push(ts, push, thread_id);
         // Energy read while it was open is its own, though it was written only as it closed.
         if (!_energy.empty()) {
             credit_energy(thread_id, ts, evt.zone.end_ticks);
@@ -472,19 +495,22 @@ void Consumer::process_event(uint32_t thread_id, Event const &evt) {
     }
 }
 
-void Consumer::unwind_stale_frames(ThreadState &ts, size_t depth) {
+void Consumer::unwind_stale_frames(ThreadState &ts, size_t depth, uint32_t thread_id, uint64_t ticks) {
     if (ts.stack.size() <= depth) {
         return;
     }
     _unmatched_zones.fetch_add(ts.stack.size() - depth, std::memory_order_relaxed);
+    for (size_t k = depth; k < ts.stack.size(); ++k) {
+        _trace.end_lost(thread_id, ticks);
+    }
     // No time is recorded for these zones or charged to their parents: it would be invented.
     ts.stack.resize(depth);
 }
 
-void Consumer::process_push(ThreadState &ts, Event const &evt) {
+void Consumer::process_push(ThreadState &ts, Event const &evt, uint32_t thread_id) {
     // Anything open at or below the level this zone opens at lost its Pop.
     if (evt.depth > 0) {
-        unwind_stale_frames(ts, evt.depth - 1);
+        unwind_stale_frames(ts, evt.depth - 1, thread_id, evt.ticks);
     }
 
     // The site gives the file, line and function; the name is the event's own when it has one.
@@ -539,6 +565,9 @@ void Consumer::process_push(ThreadState &ts, Event const &evt) {
     frame.node = it->second.get();
 
     ts.stack.push_back(frame);
+    // The trace has the zone's own name, though the tree may have folded it into "(other)", and
+    // its true start, though a reset may have clipped the tree's.
+    _trace.begin(thread_id, evt.ticks, evt.site_id, name_id);
 }
 
 auto inclusive_time(AggNode const &node) -> ns {
@@ -588,7 +617,7 @@ void Consumer::process_pop(ThreadState &ts, Event const &evt, uint32_t thread_id
     // Anything open below the level being closed lost its Pop. The common case: a burst's pops
     // land after the burst has overrun the ring.
     if (evt.depth > 0) {
-        unwind_stale_frames(ts, evt.depth);
+        unwind_stale_frames(ts, evt.depth, thread_id, evt.ticks);
     }
 
     if (ts.stack.empty())
@@ -614,7 +643,8 @@ void Consumer::process_pop(ThreadState &ts, Event const &evt, uint32_t thread_id
     if (counted && !_counters_checked) {
         auto &backend = get_counter_backend();
         for (int i = 0; i < kNumCounterSlots; ++i) {
-            _counter_names[i] = backend.slot_name(i);
+            _counter_names[i]    = backend.slot_name(i);
+            _counter_name_ids[i] = _counter_names[i].empty() ? 0 : _strings.intern(_counter_names[i]);
         }
         _counters_checked = true;
     }
@@ -637,6 +667,20 @@ void Consumer::process_pop(ThreadState &ts, Event const &evt, uint32_t thread_id
         }
     }
 
+    if (_trace.is_open()) {
+        std::array<TraceArg, kNumCounterSlots> deltas{};
+        size_t                                 n = 0;
+        for (int i = 0; counted && i < kNumCounterSlots; ++i) {
+            if (!_counter_names[i].empty()) {
+                deltas[n++] = {.key_id      = _counter_name_ids[i],
+                               .type        = AnnotateValueType::Int64,
+                               .is_unsigned = true,
+                               .int_val     = static_cast<int64_t>(evt.counters[i] - frame.counters[i])};
+            }
+        }
+        _trace.end(thread_id, evt.ticks, std::span<TraceArg const>(deltas.data(), n));
+    }
+
     // Record timeline event for Gantt chart
     {
         using ms = std::chrono::duration<double, std::milli>;
@@ -657,9 +701,14 @@ void Consumer::process_pop(ThreadState &ts, Event const &evt, uint32_t thread_id
         ts.stack.back().child_time += duration;
 }
 
-void Consumer::process_annotate(ThreadState &ts, Event const &evt) {
+void Consumer::process_annotate(ThreadState &ts, Event const &evt, uint32_t thread_id) {
     if (ts.stack.empty())
         return;
+    _trace.annotate(thread_id, {.key_id    = evt.annotation.key_id,
+                                .type      = evt.annotation.value_type,
+                                .int_val   = evt.annotation.value_type == AnnotateValueType::Int64 ? evt.annotation.int_val : 0,
+                                .float_val = evt.annotation.value_type == AnnotateValueType::Float64 ? evt.annotation.float_val : 0.0,
+                                .string_id = evt.annotation.value_type == AnnotateValueType::String ? evt.annotation.string_id : 0});
 
     // The innermost frame already knows its node; no walk, no string lookups.
     AggNode *cur = ts.stack.back().node;
@@ -705,6 +754,7 @@ void Consumer::process_mem(ThreadState &ts, Event const &evt, uint32_t thread_id
     // The allocation track: every allocation and free, in a zone or not.
     double const t_ms = std::chrono::duration<double, std::milli>(TickClock::instance().to_time_point(evt.ticks) - _program_start).count();
     _live_bytes += alloc ? evt.mem.bytes : -evt.mem.bytes;
+    _trace.live_bytes(evt.ticks, _live_bytes);
     MemorySample const sample{.seq = ++_memory_seq, .t_ms = t_ms, .live_bytes = _live_bytes};
     if (_memory.size() < kMaxMemorySamples) {
         _memory.push_back(sample);

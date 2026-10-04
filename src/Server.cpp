@@ -11,6 +11,7 @@
 
 #include "Detail/JsonEscape.hpp"
 #include "Diagnostics.hpp"
+#include "Process.hpp"
 #include "Sources.hpp"
 
 #ifndef _WIN32
@@ -29,16 +30,9 @@
 #    pragma comment(lib, "ws2_32.lib")
 #endif
 
-#ifdef __APPLE__
-#    include <mach-o/dyld.h>
-#elif defined(__linux__)
-#    include <linux/limits.h>
-#endif
-
 #include <chrono>
 #include <cmath>
 #include <ctime>
-#include <filesystem>
 #include <fstream>
 #include <limits>
 
@@ -178,62 +172,6 @@ std::string duplicates_json(std::vector<DuplicateCollector> const &duplicates) {
     return out + "]";
 }
 
-// TODO: Don't we already have this in RuntimeConfiguration?
-auto get_executable_path() -> std::string {
-#ifdef __APPLE__
-    // NOLINTNEXTLINE(modernize-avoid-c-arrays)
-    char     path[1024];
-    uint32_t size = sizeof(path);
-    if (_NSGetExecutablePath(path, &size) == 0) {
-        // Resolve symlinks
-        // NOLINTNEXTLINE(modernize-avoid-c-arrays)
-        char resolved[PATH_MAX];
-        if (realpath(path, resolved)) {
-            return {resolved};
-        }
-        return {path};
-    }
-#elif defined(__linux__)
-    char    path[PATH_MAX];
-    ssize_t len = readlink("/proc/self/exe", path, sizeof(path) - 1);
-    if (len > 0) {
-        path[len] = '\0';
-        return std::string(path);
-    }
-#elif defined(_WIN32)
-    char path[MAX_PATH];
-    if (GetModuleFileNameA(nullptr, path, MAX_PATH) > 0) {
-        return std::string(path);
-    }
-#endif
-    return "";
-}
-
-// TODO: Don't we already have this in RuntimeConfiguration?
-auto get_executable_name() -> std::string {
-#ifdef __APPLE__
-    // NOLINTNEXTLINE(modernize-avoid-c-arrays)
-    char     path[1024];
-    uint32_t size = sizeof(path);
-    if (_NSGetExecutablePath(path, &size) == 0) {
-        return std::filesystem::path(path).filename().string();
-    }
-#elif defined(__linux__)
-    char    path[PATH_MAX];
-    ssize_t len = readlink("/proc/self/exe", path, sizeof(path) - 1);
-    if (len > 0) {
-        path[len] = '\0';
-        return std::filesystem::path(path).filename().string();
-    }
-#elif defined(_WIN32)
-    char path[MAX_PATH];
-    if (GetModuleFileNameA(nullptr, path, MAX_PATH) > 0) {
-        return std::filesystem::path(path).filename().string();
-    }
-#endif
-    return "unknown";
-}
-
 auto get_start_time_iso() -> std::string {
     auto        now = std::chrono::system_clock::now();
     std::time_t tt  = std::chrono::system_clock::to_time_t(now);
@@ -259,10 +197,6 @@ auto get_hostname() -> std::string {
 }
 
 // Computed once at static init time
-// NOLINTNEXTLINE(bugprone-throwing-static-initialization)
-static std::string const s_executable_name = get_executable_name();
-// NOLINTNEXTLINE(bugprone-throwing-static-initialization)
-static std::string const s_executable_path = get_executable_path();
 // NOLINTNEXTLINE(bugprone-throwing-static-initialization)
 static std::string const s_start_time = get_start_time_iso();
 
@@ -583,14 +517,10 @@ void Server::send_snapshot_to(socket_t fd) {
 
     // Meta line
     msg += R"({"type":"meta","pid":)";
-#ifndef _WIN32
-    msg += std::to_string(getpid());
-#else
-    msg += std::to_string(GetCurrentProcessId());
-#endif
+    msg += std::to_string(process_id());
 
-    msg += R"(,"executable":")" + escape_json_str(s_executable_name) + "\"";
-    msg += R"(,"executable_path":")" + escape_json_str(s_executable_path) + "\"";
+    msg += R"(,"executable":")" + escape_json_str(executable_name()) + "\"";
+    msg += R"(,"executable_path":")" + escape_json_str(executable_path()) + "\"";
     msg += R"(,"start_time":")" + escape_json_str(s_start_time) + "\"";
     {
         auto const clients = _handlers.clients();
@@ -963,17 +893,13 @@ void Server::process_request(socket_t fd, std::string const &line) {
 }
 
 void Server::register_mdns(uint16_t port) {
-#ifdef _WIN32
-    auto const pid = std::to_string(GetCurrentProcessId());
-#else
-    auto const pid = std::to_string(getpid());
-#endif
+    auto const pid = std::to_string(process_id());
     // "exe-PID" tells instances of one program apart.
     _mdns = std::make_unique<MdnsAdvertisement>(MdnsAdvertisement::Service{
-        .name = s_executable_name + "-" + pid,
+        .name = executable_name() + "-" + pid,
         .type = "_waggle._tcp",
         .port = port,
-        .txt  = {{"exe", s_executable_name}, {"pid", pid}, {"start", s_start_time}},
+        .txt  = {{"exe", executable_name()}, {"pid", pid}, {"start", s_start_time}},
     });
 }
 
@@ -997,7 +923,7 @@ void Server::export_session(std::string const &path, std::string const &label,
     std::string json;
     json.reserve(65536);
 
-    std::string const session_label = label.empty() ? s_executable_name : label;
+    std::string const session_label = label.empty() ? executable_name() : label;
 
     json += "{\n";
     json += "  \"format\": \"waggle-session\",\n";
@@ -1008,16 +934,12 @@ void Server::export_session(std::string const &path, std::string const &label,
     // Meta
     json += "  \"meta\": {\n";
     json += "    \"pid\": ";
-#ifndef _WIN32
-    json += std::to_string(getpid());
-#else
-    json += std::to_string(GetCurrentProcessId());
-#endif
+    json += std::to_string(process_id());
     json += ",\n";
     json += R"(    "hostname": ")" + escape_json_str(get_hostname()) + "\",\n";
-    json += R"(    "executable": ")" + escape_json_str(s_executable_name) + "\",\n";
+    json += R"(    "executable": ")" + escape_json_str(executable_name()) + "\",\n";
     json += R"(    "start_time": ")" + escape_json_str(s_start_time) + "\",\n";
-    json += R"(    "executable_path": ")" + escape_json_str(s_executable_path) + "\",\n";
+    json += R"(    "executable_path": ")" + escape_json_str(executable_path()) + "\",\n";
     json += "    \"clients\": " + clients_json(_handlers.clients()) + ",\n";
     json += "    \"counters\": " + counters_json() + "\n";
     json += "  },\n";

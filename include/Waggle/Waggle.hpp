@@ -113,6 +113,7 @@ auto apply_settings(SettingsUpdate const &update, Set set) -> int {
     one("max_distinct_children", update.max_distinct_children);
     one("disabled_domains", update.disabled_domains);
     one("sources", update.sources);
+    one("trace", update.trace);
     std::vector<char const *> values;
     values.reserve(texts.size());
     for (auto const &text : texts) {
@@ -247,6 +248,7 @@ inline Settings settings() {
     number("max_distinct_children", s.max_distinct_children);
     text("disabled_domains", s.disabled_domains);
     text("sources", s.sources);
+    text("trace", s.trace);
     return s;
 }
 

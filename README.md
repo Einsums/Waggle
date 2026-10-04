@@ -110,6 +110,7 @@ At exit, a program that never opened a zone writes no report.
 | `WAGGLE_MAX_DISTINCT_CHILDREN` | names a zone keeps before the rest fold into "(other)" |
 | `WAGGLE_DISABLE_DOMAINS` | libraries whose zones are not recorded, comma-separated |
 | `WAGGLE_SOURCES` | optional instruments to turn on, comma-separated (see below) |
+| `WAGGLE_TRACE` | write every zone to a Perfetto trace for [ui.perfetto.dev](https://ui.perfetto.dev) (`{pid}` becomes the process id) |
 
 ## Sources
 

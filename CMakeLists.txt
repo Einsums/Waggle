@@ -37,12 +37,14 @@ add_library(
   src/Energy.cpp
   src/Mdns.cpp
   src/Ompt.cpp
+  src/Process.cpp
   src/Server.cpp
   src/Settings.cpp
   src/Signposts.cpp
   src/Snapshot.cpp
   src/Sources.cpp
   src/Symbols.cpp
+  src/Trace.cpp
   src/Waggle.cpp
 )
 add_library(Waggle::waggle ALIAS waggle)

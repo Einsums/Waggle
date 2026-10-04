@@ -65,6 +65,10 @@ Every setting by name (as ``waggle_config_set``, ``waggle.configure`` and ``wagg
       - ``WAGGLE_SOURCES``
       - empty
       - Optional instruments to turn on, comma-separated: ``counters``, ``energy``, ``openmp``, ``signposts``.
+    * - ``trace``
+      - ``WAGGLE_TRACE``
+      - empty
+      - Write every zone to a Perfetto trace at this path (``{pid}`` becomes the process id); see :doc:`/guides/traces`.
 
 Booleans accept ``1``, ``true``, ``on``, ``yes`` and ``0``, ``false``, ``off``, ``no``.
 

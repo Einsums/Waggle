@@ -73,6 +73,11 @@ def _stack() -> list[bool]:
     try:
         return _opened.stack
     except AttributeError:
+        # A thread's first zone: give the collector the thread's Python name, which it cannot see.
+        # The main thread keeps the name the collector gave it.
+        current = threading.current_thread()
+        if current is not threading.main_thread():
+            _core().set_thread_name(current.name)
         _opened.stack = []
         return _opened.stack
 

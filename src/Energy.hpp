@@ -18,10 +18,7 @@ struct ThreadEnergy {
     uint64_t e_core_nj{0}; ///< of which on efficiency cores
 };
 
-/// The calling thread's id as @ref read_thread_energy takes it; 0 where there is none.
-WAGGLE_EXPORT auto kernel_thread_id() -> uint64_t;
-
-/// Thread @p kernel_thread's energy so far. Any thread of the process may read any other's.
+/// Thread @p kernel_thread's energy so far, the thread named by its @ref kernel_thread_id. Any thread of the process may read any other's.
 ///
 /// On macOS it is XNU's estimate from the CPU's power model (proc_pidinfo's PROC_PIDTHREADCOUNTS),
 /// updated every few milliseconds, not continuously; reading it costs about 160 ns. Elsewhere there is

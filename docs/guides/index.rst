@@ -18,5 +18,6 @@ Each guide covers one thing Waggle does, end to end.
     device-work
     memory
     sessions
+    traces
     plugins
     platforms

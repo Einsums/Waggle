@@ -57,6 +57,14 @@ Each session holds:
 
 The viewer's own saves nest the trees under ``snapshot`` and add ``bookmarks`` and ``node_history``; both shapes load.
 
+Traces
+======
+
+The ``trace`` setting writes a `Perfetto <https://perfetto.dev>`_ trace: a protobuf ``Trace`` of ``TracePacket`` messages, as Perfetto's ``protos/perfetto/trace`` define them.
+Each recording thread is a packet sequence of its own, starting with a clock snapshot and its track; its zones are ``TrackEvent`` begins and ends, with interned names, call sites and argument names, and times on an incremental clock of the sequence's own.
+Sequence 1 holds the tracks (process, threads, device queues, counters), device work and counters, with absolute ``CLOCK_MONOTONIC`` times.
+:doc:`/guides/traces` says what each track holds.
+
 Recordings
 ==========
 
