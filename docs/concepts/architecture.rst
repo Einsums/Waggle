@@ -42,7 +42,8 @@ The C interface is the contract between libraries and the collector: plain expor
 The server
 ==========
 
-With ``server`` on, the session is served over TCP (127.0.0.1, port 19216 by default) as JSON lines: a ``meta`` message on connect, then a snapshot, the timeline, and what changed in the allocation track and device work, with every pass of the consumer while a viewer is connected.
+With ``server`` on, the session is served over TCP (127.0.0.1, port 19216 by default) as JSON lines: a ``meta`` message on connect, then, about twice a second while a viewer is connected, a snapshot, the timeline, and what changed in the allocation track and device work.
+The consumer drains the rings every few milliseconds, but ticks the server only every 500 ms, so serializing the trees costs it little.
 Viewers send requests the program's handlers answer.
 The server advertises itself over mDNS so viewers find it.
 :doc:`/reference/formats` gives the messages.
