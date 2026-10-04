@@ -141,6 +141,12 @@ WAGGLE_C_EXPORT int waggle_config_override(char const *const *keys, char const *
  * length without the terminator; -1 for an unknown name. */
 WAGGLE_C_EXPORT int64_t waggle_config_get(char const *key, char *buffer, size_t size);
 
+/* The state of the source named `name` ("counters", "openmp", "signposts"), as "state: detail",
+ * terminated, into `buffer` when it fits; returns its length without the terminator, -1 for a
+ * source this collector does not have. The state is "off", "active", or why one asked for records
+ * nothing ("waiting", "missed", "unavailable"); the detail says more. */
+WAGGLE_C_EXPORT int64_t waggle_source_status(char const *name, char *buffer, size_t size);
+
 /* Count a library as using the profiler until its waggle_finalize. Every argument is
  * terminated; any may be empty. */
 WAGGLE_C_EXPORT void waggle_init(char const *name, char const *version, char const *git_commit, char const *git_branch, int git_dirty,

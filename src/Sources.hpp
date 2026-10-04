@@ -41,6 +41,16 @@ WAGGLE_EXPORT auto status() -> SourceStatus;
 WAGGLE_EXPORT void note_thread(bool opened);
 } // namespace counters
 
+namespace signposts {
+/// The signposts source: every zone also emitted as an os_signpost interval, so Instruments shows
+/// them beside its own tracks, one category per library. macOS only.
+WAGGLE_EXPORT auto status() -> SourceStatus;
+/// Whether this platform can emit signposts.
+WAGGLE_EXPORT auto available() -> bool;
+/// A thread registered while the source was asked for: @p emitting is whether it emits.
+WAGGLE_EXPORT void note_thread(bool emitting);
+} // namespace signposts
+
 namespace ompt {
 /// The OpenMP source: zones for parallel regions, each thread's share of them, and barrier waits,
 /// from the runtime's OMPT callbacks.

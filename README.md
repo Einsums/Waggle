@@ -119,10 +119,14 @@ The viewer and the report say why a source that was asked for records nothing.
 | --- | --- |
 | `counters` | each zone's hardware counters: cycles, instructions, cache and branch misses through Linux perf; cycles and instructions, and the efficiency cores' share, through XNU on macOS |
 | `openmp` | each parallel region, each thread's share of it, and the barrier waits inside, through OMPT |
+| `signposts` | every zone also as an `os_signpost` interval, so Instruments shows it beside its own CPU, GPU and memory tracks (macOS) |
 
 `counters` costs a system call as each zone opens and as it closes, a few hundred nanoseconds against a few for a zone without counters, so time coarse zones with it.
 A thread counts if the source was asked for when it first recorded.
 On Linux, `kernel.perf_event_paranoid` must be 2 or less, and a virtual machine often has no hardware counters; on macOS the reading needs no root, but only cycles and instructions are open to it.
+
+`signposts` puts zones under the subsystem `waggle`, one category per library, so Instruments' os_signpost or Logging instrument shows each library in its own lane; `xcrun xctrace record --template Logging --launch -- ./program` records them from the command line.
+A zone's name is the interval's message, as an interval's own name must be fixed when the program is built.
 
 `openmp` needs an OpenMP runtime with OMPT: LLVM's libomp, which also runs GCC-compiled code, or Intel's; GCC's own libgomp has none.
 The runtime looks for a tool once, when it starts, so the source must be asked for before the program's first OpenMP call: in the environment, or by configuring Waggle first.

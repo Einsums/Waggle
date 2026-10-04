@@ -71,6 +71,30 @@ else()
   message(STATUS "Waggle: the OpenMP source's test needs OpenMP and LLVM's libomp; not built")
 endif()
 
+# The signposts source, recorded with Instruments' command line, where there is one.
+if(APPLE)
+  add_executable(waggle_SignpostsProgram unit/SignpostsProgram.cpp)
+  target_link_libraries(waggle_SignpostsProgram PRIVATE Waggle::waggle)
+  add_dependencies(waggle_tests waggle_SignpostsProgram)
+  execute_process(
+    COMMAND xcrun -f xctrace
+    RESULT_VARIABLE _waggle_no_xctrace
+    OUTPUT_QUIET ERROR_QUIET
+  )
+  find_package(Python3 COMPONENTS Interpreter)
+  if(_waggle_no_xctrace EQUAL 0 AND Python3_Interpreter_FOUND)
+    add_test(NAME ${WAGGLE_TEST_PREFIX}Signposts COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/signposts.py
+                                                         $<TARGET_FILE:waggle_SignpostsProgram>
+    )
+    # The script's own verdict, so a script that checks nothing (or is empty) cannot pass.
+    set_tests_properties(
+      ${WAGGLE_TEST_PREFIX}Signposts PROPERTIES TIMEOUT 300 RUN_SERIAL TRUE PASS_REGULAR_EXPRESSION "signposts: [0-9]+ intervals as expected"
+    )
+  else()
+    message(STATUS "Waggle: the signposts test needs xctrace (Xcode) and Python; not run")
+  endif()
+endif()
+
 # Metal device zones on the machine's GPU; a runner without one skips.
 if(APPLE)
   enable_language(OBJCXX)

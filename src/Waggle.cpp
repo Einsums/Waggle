@@ -170,6 +170,7 @@ Profiler::Profiler() : _consumer(std::make_unique<Consumer>(_strings, _sites)) {
 void Profiler::apply(Settings const &s) {
     set_enabled(s.record);
     _counters_wanted.store(source_requested(s, "counters"), std::memory_order_release);
+    _signposts_wanted.store(source_requested(s, "signposts"), std::memory_order_release);
     _consumer->set_max_distinct_children(s.max_distinct_children);
     if (s.server) {
         start_server(static_cast<uint16_t>(s.port));
@@ -352,6 +353,11 @@ auto Profiler::register_thread() -> ThreadChannel & {
     if (_counters_wanted.load(std::memory_order_acquire)) {
         channel->counters = get_counter_backend().open(channel->counter_state);
         counters::note_thread(channel->counters);
+    }
+
+    if (_signposts_wanted.load(std::memory_order_acquire)) {
+        channel->emit = signposts::available();
+        signposts::note_thread(channel->emit);
     }
 
     // The consumer drains the ring, and shares the channel's ownership through it.

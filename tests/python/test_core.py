@@ -283,3 +283,10 @@ def test_a_server_advertises_itself_to_the_viewer():
         browser.stop()
         program.stdin.close()
         program.wait(timeout=60)
+
+
+def test_a_sources_state_can_be_asked_for():
+    assert waggle.source_status("signposts") == ("off", "")  # not asked for here
+    state, detail = waggle.source_status("counters")
+    assert state == "off"
+    assert waggle.source_status("no such source") is None

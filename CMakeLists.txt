@@ -38,6 +38,7 @@ add_library(
   src/Ompt.cpp
   src/Server.cpp
   src/Settings.cpp
+  src/Signposts.cpp
   src/Snapshot.cpp
   src/Sources.cpp
   src/Symbols.cpp

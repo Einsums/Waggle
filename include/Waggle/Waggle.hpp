@@ -250,6 +250,29 @@ inline Settings settings() {
     return s;
 }
 
+/// A source's state: "off", "active", or why one asked for records nothing, and what more to know.
+struct SourceState {
+    std::string state;
+    std::string detail;
+};
+
+/// The state of the source named @p name ("counters", "openmp", "signposts"); empty for a source
+/// this collector does not have.
+inline std::optional<SourceState> source_status(char const *name) {
+    std::int64_t const length = waggle_source_status(name, nullptr, 0);
+    if (length < 0) {
+        return std::nullopt;
+    }
+    std::string text(static_cast<size_t>(length) + 1, '\0');
+    waggle_source_status(name, text.data(), text.size());
+    text.resize(static_cast<size_t>(length));
+    auto const colon = text.find(": ");
+    if (colon == std::string::npos) {
+        return SourceState{.state = text, .detail = {}};
+    }
+    return SourceState{.state = text.substr(0, colon), .detail = text.substr(colon + 2)};
+}
+
 /// Count @p client as using the profiler until its matching @ref finalize.
 inline void init(ClientInfo const &client) {
     waggle_init(client.name.c_str(), client.version.c_str(), client.git_commit.c_str(), client.git_branch.c_str(), client.git_dirty ? 1 : 0,

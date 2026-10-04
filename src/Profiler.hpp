@@ -456,6 +456,9 @@ struct WAGGLE_EXPORT Profiler {
         bool counters{false};
         /// Its open counters.
         ThreadCounters counter_state{};
+        /// Whether this thread's zones are also emitted to the platform's tracing tool
+        /// (os_signpost, for Instruments): the signposts source was asked for when it registered.
+        bool emit{false};
         /// Whether this thread has woken the consumer since its ring last passed half full.
         bool woke_consumer{false};
         /// Events left before @ref wake_consumer_if_filling looks at the ring again.
@@ -518,6 +521,8 @@ struct WAGGLE_EXPORT Profiler {
     /// Whether the counters source is asked for: read as each thread registers, which takes no
     /// lock, as a thread may first record inside one (a diagnostic while settings change).
     std::atomic<bool> _counters_wanted{false};
+    /// Likewise for the signposts source.
+    std::atomic<bool> _signposts_wanted{false};
 
     /// The next device submission's token; 0 is none.
     std::atomic<uint64_t> _next_device_token{1};
@@ -566,6 +571,9 @@ struct WAGGLE_EXPORT Profiler {
     WAGGLE_FORCEINLINE void write_push(ThreadChannel &ch, uint32_t site_id, uint32_t name_id) {
         // Counted even when the event is dropped: the consumer resynchronizes on it.
         uint32_t const depth = ++ch.depth;
+        if (ch.emit) [[unlikely]] {
+            signpost_begin(site_id, name_id, depth);
+        }
         if (ch.pending != 0) {
             write_pending_push(ch);
         }
@@ -607,6 +615,9 @@ struct WAGGLE_EXPORT Profiler {
             return;
         }
         uint32_t const depth = ch.depth--;
+        if (ch.emit) [[unlikely]] {
+            signpost_end(depth);
+        }
         if (ch.pending == depth) {
             // Nothing happened inside it: the whole zone in one event.
             if (Event *evt = ch.ring.try_claim()) {
@@ -647,6 +658,11 @@ struct WAGGLE_EXPORT Profiler {
             ch.woke_consumer = false;
         }
     }
+
+    /// The signposts source (Signposts.cpp): a zone opening and closing at nesting level @p depth,
+    /// emitted as an os_signpost interval. Out of line, so a zone that does not emit pays a branch.
+    [[gnu::noinline]] void        signpost_begin(uint32_t site_id, uint32_t name_id, uint32_t depth);
+    [[gnu::noinline]] static void signpost_end(uint32_t depth);
 
     static void read_counters(ThreadChannel const &ch, Event &evt) {
         std::array<uint64_t, kNumCounterSlots> values;

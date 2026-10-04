@@ -264,6 +264,19 @@ APIARY_EXPOSE inline std::optional<std::string> setting(std::string const &key) 
     return value;
 }
 
+/// The source named @p name's state as ``"state: detail"``, or None for a source this collector does
+/// not have; :func:`waggle.source_status` splits it.
+APIARY_EXPOSE inline std::optional<std::string> source_status_text(std::string const &name) {
+    std::int64_t const length = waggle_source_status(name.c_str(), nullptr, 0);
+    if (length < 0) {
+        return std::nullopt;
+    }
+    std::string text(static_cast<size_t>(length) + 1, '\0');
+    waggle_source_status(name.c_str(), text.data(), text.size());
+    text.resize(static_cast<size_t>(length));
+    return text;
+}
+
 /// Count @p name as a library using the profiler until its ``finalize``.
 APIARY_EXPOSE inline void init(std::string const &name, std::string const &version = "") {
     waggle_init(name.c_str(), version.c_str(), "", "", 0, "");

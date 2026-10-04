@@ -35,7 +35,7 @@ auto source_requested(Settings const &settings, std::string_view name) -> bool {
 }
 
 auto source_statuses() -> std::vector<SourceStatus> {
-    return {counters::status(), ompt::status()};
+    return {counters::status(), ompt::status(), signposts::status()};
 }
 
 namespace counters {

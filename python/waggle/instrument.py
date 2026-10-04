@@ -169,6 +169,17 @@ def profile(func: Any = None, /, *, name: str | None = None, domain: str = "pyth
     return wrapper
 
 
+def source_status(name: str) -> tuple[str, str] | None:
+    """The state of the source named *name* (``"counters"``, ``"openmp"``, ``"signposts"``) and what
+    more to know: ``("active", "XNU thread counts")``, ``("unavailable", "...why...")``. None for a
+    source this collector does not have."""
+    text = _core().source_status_text(name)
+    if text is None:
+        return None
+    state, _, detail = text.partition(": ")
+    return state, detail
+
+
 def annotate_dims(key: str, dims: Any) -> None:
     """Attach a sequence of dimension sizes as ``<key>.0``, ``<key>.1``, ... annotations."""
     annotate = _core().annotate

@@ -23,6 +23,7 @@
 #include "Profiler.hpp"
 #include "Settings.hpp"
 #include "Snapshot.hpp"
+#include "Sources.hpp"
 
 struct waggle_reply {
     std::string data;
@@ -300,6 +301,22 @@ int waggle_config_override(char const *const *keys, char const *const *values, s
         return 0;
     }
     return set_settings(keys, values, count, true);
+}
+
+int64_t waggle_source_status(char const *name, char *buffer, size_t size) {
+    if (unusable()) {
+        return -1;
+    }
+    for (auto const &source : waggle::source_statuses()) {
+        if (source.name == view(name)) {
+            std::string const text = source.detail.empty() ? source.state : source.state + ": " + source.detail;
+            if (buffer != nullptr && size > text.size()) {
+                std::memcpy(buffer, text.c_str(), text.size() + 1);
+            }
+            return static_cast<int64_t>(text.size());
+        }
+    }
+    return -1;
 }
 
 int64_t waggle_config_get(char const *key, char *buffer, size_t size) {

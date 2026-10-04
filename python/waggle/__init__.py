@@ -17,7 +17,7 @@ __version__ = "0.1.0"
 
 # Names waggle.instrument defines; every other public name comes from the compiled module.
 _INSTRUMENT = frozenset(
-    {"Zone", "zone", "profile", "annotate_dims", "snapshot", "Snapshot", "Node", "Thread", "available"}
+    {"Zone", "zone", "profile", "annotate_dims", "snapshot", "Snapshot", "Node", "Thread", "available", "source_status"}
 )
 
 
