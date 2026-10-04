@@ -164,9 +164,13 @@ if(WAGGLE_BUILD_PYTHON)
   )
   target_link_libraries(waggle_core PRIVATE waggle_python_api)
 
-  # waggle/_core beside the staged package's Python files, under every configuration's name.
+  # waggle/_core beside the staged package's Python files, under every configuration's name: a
+  # per-configuration directory a parent project sets (CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE, as
+  # Einsums does under MSVC) wins over the plain one, under single-configuration generators too.
   set_target_properties(waggle_core PROPERTIES OUTPUT_NAME _core LIBRARY_OUTPUT_DIRECTORY "${_waggle_python_dir}/waggle")
-  foreach(_config IN LISTS CMAKE_CONFIGURATION_TYPES)
+  set(_waggle_configs Debug Release RelWithDebInfo MinSizeRel ${CMAKE_CONFIGURATION_TYPES} ${CMAKE_BUILD_TYPE})
+  list(REMOVE_DUPLICATES _waggle_configs)
+  foreach(_config IN LISTS _waggle_configs)
     string(TOUPPER "${_config}" _config)
     set_target_properties(waggle_core PROPERTIES LIBRARY_OUTPUT_DIRECTORY_${_config} "${_waggle_python_dir}/waggle")
   endforeach()

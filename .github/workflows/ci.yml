@@ -67,7 +67,9 @@ jobs:
           test -S /run/avahi-daemon/socket
 
       - name: Configure
-        run: cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DWAGGLE_BUILD_TESTS=ON -DWAGGLE_BUILD_PYTHON=ON -DWAGGLE_REQUIRE_OMPT_TEST=ON -DWAGGLE_REQUIRE_PERFETTO_TEST=ON
+        # A per-configuration output directory, as a parent project like Einsums sets, must not
+        # move waggle._core out of the package (its Python tests require it).
+        run: cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DWAGGLE_BUILD_TESTS=ON -DWAGGLE_BUILD_PYTHON=ON -DCMAKE_LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO=${{ github.workspace }}/build/elsewhere -DWAGGLE_REQUIRE_OMPT_TEST=ON -DWAGGLE_REQUIRE_PERFETTO_TEST=ON
 
       - name: Build
         run: cmake --build build --target all waggle_tests
@@ -91,7 +93,9 @@ jobs:
           miniforge-version: latest
 
       - name: Configure
-        run: cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DWAGGLE_BUILD_TESTS=ON -DWAGGLE_BUILD_PYTHON=ON
+        # A per-configuration output directory, as a parent project like Einsums sets, must not
+        # move waggle._core out of the package (its Python tests require it).
+        run: cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DWAGGLE_BUILD_TESTS=ON -DWAGGLE_BUILD_PYTHON=ON -DCMAKE_LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO=${{ github.workspace }}/build/elsewhere
 
       - name: Build
         run: cmake --build build --target all waggle_tests
