@@ -41,8 +41,10 @@ static AggNode const *find_node_any_thread(std::unordered_map<uint32_t, ThreadSt
     return nullptr;
 }
 
+/// Drain every thread's ring into the trees before reading them. It slept 50 ms and hoped the
+/// consumer thread had drained by then, which a loaded CI machine did not always manage.
 static void wait_for_drain() {
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    Profiler::instance().flush();
 }
 
 TEST_CASE("String annotations appear in tree", "[profiler][annotations]") {
