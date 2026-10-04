@@ -70,7 +70,7 @@ class PluginPanel:
     requirement: Requirement
     #: Builds the panel's widget, which the viewer gives the id ``<plugin>-<name>``.
     make_widget: Callable[[str], Any]
-    #: Redraws the panel: (app, widget, session, live client or None).
+    #: Redraws the panel, called with the app, the widget, the session and the live client (or None).
     refresh: Callable[[Any, Any, Session, ProfileClient | None], Awaitable[None]]
     #: Seconds between redraws while visible; None redraws only when shown.
     interval: float | None = None
@@ -84,7 +84,7 @@ class PluginAction:
     key: str
     description: str
     requirement: Requirement
-    #: Runs the action: (app, session, live client or None).
+    #: Runs the action, called with the app, the session and the live client (or None).
     run: Callable[[Any, Session, ProfileClient | None], Awaitable[None]]
 
 

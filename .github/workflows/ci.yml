@@ -97,6 +97,50 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure -j4
 
+  docs:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          environment-file: environment.yml
+          activate-environment: waggle-dev
+          miniforge-version: latest
+
+      - name: Give apiary clang's builtin headers
+        # As in the build job: apiary parses the headers for the C and C++ reference too.
+        run: conda install -y -c conda-forge "clang 23.*"
+
+      - name: Build the documentation
+        # Warnings are errors and every cross-reference must resolve.
+        run: |
+          cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=Release -DWAGGLE_BUILD_PYTHON=ON -DWAGGLE_BUILD_DOCS=ON -DWAGGLE_BUILD_TESTS=OFF
+          cmake --build build --target waggle_docs
+
+      - uses: actions/upload-pages-artifact@v3
+        if: github.ref == 'refs/heads/main'
+        with:
+          path: build/docs/html
+
+  pages:
+    # main's documentation, published at https://einsums.github.io/Waggle.
+    if: github.ref == 'refs/heads/main'
+    needs: docs
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
+
   lint:
     runs-on: ubuntu-latest
     steps:

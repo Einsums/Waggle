@@ -3,6 +3,8 @@
 A low-overhead tracing profiler for C and C++ libraries.
 Every library in a process records into one shared collector, so their zones form a single tree, and a terminal viewer shows it live.
 
+**Documentation: https://einsums.github.io/Waggle** (built from `docs/`; this page is a summary).
+
 Waggle came out of [Einsums](https://github.com/Einsums/Einsums), whose profiler it was, so that Einsums, Nectar and other libraries can profile one program together.
 
 ## Instrumenting a library

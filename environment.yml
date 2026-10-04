@@ -18,3 +18,8 @@ dependencies:
   # the viewer's discovery of servers over mDNS
   - zeroconf
   - pre-commit
+  # the documentation (WAGGLE_BUILD_DOCS)
+  - sphinx
+  - pydata-sphinx-theme
+  - sphinx-copybutton
+  - sphinx-design

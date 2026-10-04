@@ -82,6 +82,7 @@ add_library(Waggle::internal ALIAS waggle_internal)
 # The viewer and the report tools are pure Python. waggle._core, the profiler for Python code, is a
 # compiled module apiary generates from python/src/Core.hpp; it calls only the C interface.
 option(WAGGLE_BUILD_PYTHON "Build waggle._core, the profiler for Python code (needs apiary and pybind11)" OFF)
+option(WAGGLE_BUILD_DOCS "Add waggle_docs, the HTML documentation (needs WAGGLE_BUILD_PYTHON and Sphinx)" OFF)
 
 # A project that builds Waggle beside its own Python package stages Waggle's next to it, so both
 # import from the build tree, and installs it there too. Building waggle._core needs a staged
@@ -249,6 +250,10 @@ install(
   NAMESPACE Waggle::
   DESTINATION ${_waggle_cmake_dir}
 )
+if(WAGGLE_BUILD_DOCS)
+  add_subdirectory(docs)
+endif()
+
 # The build tree is a usable package too, for a project that builds Waggle and exports its own
 # build tree.
 export(

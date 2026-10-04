@@ -877,6 +877,7 @@ class SnapshotNode {
  */
 class Snapshot {
   public:
+    /// One thread's tree: the thread's id and name, and the root above its outermost zones.
     struct Thread {
         uint32_t     id;
         std::string  name;
