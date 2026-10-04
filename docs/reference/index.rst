@@ -10,7 +10,6 @@ Reference
     :maxdepth: 1
 
     api/c/index
-    c-types
     api/cpp/index
     python
     settings

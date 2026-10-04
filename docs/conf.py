@@ -4,8 +4,8 @@
 """Sphinx configuration for Waggle's documentation.
 
 Built by the ``waggle_docs`` target (``-DWAGGLE_BUILD_DOCS=ON``), which generates the C and C++
-reference into ``reference/api/cpp`` and puts the built ``waggle`` package on the path for the
-Python reference. Warnings are errors and every cross-reference must resolve (``-W -n``).
+references into ``reference/api/c`` and ``reference/api/cpp`` and puts the built ``waggle``
+package on the path for the Python reference. Warnings are errors and every cross-reference must resolve (``-W -n``).
 """
 
 from __future__ import annotations
@@ -66,7 +66,7 @@ html_theme_options = {
 }
 html_static_path = ["_static"]
 templates_path = []
-exclude_patterns = ["_build", "tools", "_ext"]
+exclude_patterns = ["_build", "_ext"]
 
 rst_prolog = """
 .. |waggle| replace:: *Waggle*

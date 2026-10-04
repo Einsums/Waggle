@@ -126,7 +126,7 @@ endif()
 
 if(WAGGLE_BUILD_PYTHON)
   if(NOT COMMAND apiary_add_bindings)
-    find_package(Apiary 1.1...<2 CONFIG REQUIRED)
+    find_package(Apiary 1.2...<2 CONFIG REQUIRED)
   endif()
   if(NOT COMMAND pybind11_add_module)
     find_package(Python COMPONENTS Interpreter Development.Module REQUIRED)
@@ -142,6 +142,7 @@ if(WAGGLE_BUILD_PYTHON)
   set(_waggle_gen "${CMAKE_CURRENT_BINARY_DIR}/python-gen")
   apiary_add_bindings(
     BINDING
+    MODULE waggle
     HEADERS "${CMAKE_CURRENT_SOURCE_DIR}/python/src/Core.hpp"
     SOURCE_INCLUDES Core.hpp
     REGISTER_FUNCTION waggle_register_core

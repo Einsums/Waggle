@@ -31,7 +31,7 @@ Documentation
 
     cmake --build build --target waggle_docs
 
-The build copies ``docs/`` into the build tree, generates the C and C++ reference there from the headers (``docs/tools/cpp_reference.py`` runs apiary over them), and runs Sphinx with the built ``waggle`` package on the path for the Python reference.
+The build copies ``docs/`` into the build tree, generates the C and C++ references there from the headers (apiary's ``apiary_gen_cpp_docs.py``), and runs Sphinx with the built ``waggle`` package on the path for the Python reference.
 Warnings are errors, and every cross-reference must resolve.
 
 * The C and C++ reference comes from the headers' doc comments (``///`` and ``/** */``); a declaration's comment is its entry.
