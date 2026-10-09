@@ -55,10 +55,12 @@ def signposts(trace: Path) -> list[dict]:
 def main(program: str) -> int:
     with tempfile.TemporaryDirectory() as tmp:
         trace = Path(tmp) / "signposts.trace"
-        # A recording that never ends is xctrace's, not the program's (CI's virtual Macs hang one
-        # now and then before it starts recording), so it gets one more try; a wrong recording
-        # fails at once.
-        run = None
+        # Two ways a recording fails that are xctrace's, not the program's, and CI's virtual Macs
+        # show both now and then: it never ends (it hangs before it starts recording), or it ends
+        # cleanly with not one of the program's signposts in it (the logging stream attached after
+        # the program had run). Either gets one more try. A recording that captured the program
+        # but got it wrong is checked below and fails at once, and so does a second empty one.
+        found: list[dict] = []
         for attempt in (1, 2):
             if trace.exists():
                 shutil.rmtree(trace)
@@ -68,17 +70,21 @@ def main(program: str) -> int:
                      "--env", "WAGGLE_SOURCES=signposts", "--env", "WAGGLE_REPORT=false", "--launch", "--", program],
                     env=dict(os.environ), capture_output=True, text=True, timeout=120,
                 )  # fmt: skip
-                break
             except subprocess.TimeoutExpired as exc:
                 # Usually waiting for an authorization to use developer tools (DevToolsSecurity -enable gives it).
                 print(f"signposts: xctrace did not finish recording in {exc.timeout} s (attempt {attempt})")
                 print(exc.stdout or "", exc.stderr or "", sep="\n")
-        if run is None:
+                continue
+            if run.returncode != 0 or not trace.exists():
+                print(run.stdout, run.stderr, sep="\n")
+                return 1
+            found = [r for r in signposts(trace) if r.get("subsystem") == "waggle"]
+            if found:
+                break
+            print(f"signposts: the recording holds no waggle signposts (attempt {attempt})")
+        if not found:
+            print("signposts: no recording captured the program's signposts")
             return 1
-        if run.returncode != 0 or not trace.exists():
-            print(run.stdout, run.stderr, sep="\n")
-            return 1
-        found = [r for r in signposts(trace) if r.get("subsystem") == "waggle"]
 
     # An id names one interval among those open at once: the next zone at the same depth on the
     # same thread may take it again once the last has ended. So begins and ends pair in time order.
