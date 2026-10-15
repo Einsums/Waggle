@@ -54,6 +54,14 @@ struct ClockPair {
 /// zone's edge, where the process's anchor, seconds or hours away, would not.
 WAGGLE_EXPORT auto monotonic_to_ticks(uint64_t ns, ClockPair const &anchor) -> uint64_t;
 
+/// The process's loaded code, as a JSON array for the session file: each module's ``path``, its
+/// GNU ``build_id`` (hexadecimal; empty if it has none, and then the file's ``size`` and
+/// ``mtime_ns`` instead, 0 otherwise), its load ``base`` and the address
+/// ``ranges`` of its executable segments, so a sample's address names a module and an offset that
+/// addr2line resolves, and a rebuilt file is told from the one that ran. Empty where the platform
+/// has no dl_iterate_phdr.
+WAGGLE_EXPORT auto module_map_json() -> std::string;
+
 /**
  * @brief The sampling source's events: one perf_event sampling event per thread of the process.
  *

@@ -191,6 +191,9 @@ class ProfilerApp(App):
         self._name_filter = ""
         self._event = "Starting"
         self._disasm_target: tuple[str, str] | None = None
+        #: Each loaded session's hot lines by zone name, once symbolized; sessions being symbolized.
+        self._hot_lines: dict[str, dict[str, list[dict]]] = {}
+        self._symbolizing: set[str] = set()
         #: The source and collector problems already shown, per session.
         self._warned: dict[str, set[str]] = {}
         #: The time the Gantt chart and the allocation track show; reset when the session changes.
@@ -408,8 +411,15 @@ class ProfilerApp(App):
             return
         history = sparkline(list(session.history.get(node.name, ())))
         share = view.share_of_total(node) if view else 0.0
+        known = session.session_id in self._hot_lines or session.session_id in self._symbolizing
+        if "cpu" in session.extensions and not known:
+            self._symbolizing.add(session.session_id)
+            self._symbolize(session)
+        hot = self._hot_lines.get(session.session_id, {}).get(node.name)
         detail.show(
-            node_details(node, share, baseline=session.baseline, history=history, bookmarked=node.name in session.bookmarks)
+            node_details(
+                node, share, baseline=session.baseline, history=history, bookmarked=node.name in session.bookmarks, hot_lines=hot
+            )
         )
         if self._visible("source"):
             self.query_one("#source", TextPanel).show(source_context(node))
@@ -422,6 +432,23 @@ class ProfilerApp(App):
                 self._disasm_target = target
                 clients = [c.get("name", "") for c in session.meta.clients] if session.meta else []
                 self._disassemble(*target, clients)
+
+    @work(group="symbols")
+    async def _symbolize(self, session: Session) -> None:
+        """Name a loaded session's samples by line, once, off the interface's thread: addr2line can
+        take seconds over a large program."""
+        from .cpu import summary
+
+        try:
+            data = await asyncio.to_thread(summary, session)
+            self._hot_lines[session.session_id] = {z["name"]: z.get("hot_lines", []) for z in data["zones"]}
+        except (SystemExit, OSError) as error:
+            self._hot_lines[session.session_id] = {}
+            self._say(f"Samples not named: {error}")
+        finally:
+            self._symbolizing.discard(session.session_id)
+        if self.active_session is session:
+            self._show_selected()
 
     @work(exclusive=True, group="disasm")
     async def _disassemble(self, function: str, executable: str, clients: list[str]) -> None:

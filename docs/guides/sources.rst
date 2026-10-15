@@ -120,8 +120,24 @@ What that means for the numbers:
 
 With the source on, each thread writes a zone's opening as it happens, so the consumer knows which zones are open when it reads a sample; a zone with nothing inside then costs two events rather than one.
 The consumer's own thread is not sampled.
-``waggle cpu`` ranks zones by their share of the samples; ``--zone NAME`` lists one zone's samples by address.
-Addresses are named by source line in a later release.
+``waggle cpu`` ranks zones by their share of the samples, each with its hottest source lines.
+``--zone NAME --lines`` lists every line and function of one zone with samples, ``--zone NAME --asm`` the machine code of its hottest function with the samples on each instruction (``--line N`` picks the function holding line N and marks its instructions), and ``--zone NAME`` alone its samples by address.
+The viewer's detail panel shows a saved session's hot lines too.
+
+.. code-block:: console
+
+    $ waggle cpu run.json --zone contract --lines
+    contract: 1923 samples
+
+    samples %   samples  line
+         90.2      1735  src/Contract.cpp:212  pack_b
+          9.7       187  src/Contract.cpp:240  pack_a
+
+The session saves raw addresses and the program's loaded files; the names are found when you look, by ``llvm-symbolizer`` when it is on the path and ``addr2line`` otherwise, so recording pays nothing for them.
+Build with line information (``-g``, or CMake's ``RelWithDebInfo``) for lines; without it, functions only.
+A line inside inlined code is the innermost one, where the time went, and also names the function and line it was inlined into.
+Each file is checked to be the one that ran, by its build id, or by its size and time when it was linked without one: a rebuilt file is reported, not read, as its lines would be wrong.
+Code with no file, the kernel's vDSO (``clock_gettime``), is named by its module alone.
 The source reports ``unavailable`` on macOS and Windows, and where the kernel or a container's seccomp profile refuses ``perf_event_open``, saying what to change.
 
 signposts

@@ -300,3 +300,41 @@ TEST_CASE("Sampling - a program for the saved session", "[.program]") {
         prof.pop();
     }
 }
+
+namespace {
+
+std::atomic<uint64_t> g_sink{0};
+
+// The two loops of the hot_line program, each on a line of its own, marked so the test finds the
+// lines; noinline, so each is a function of its own in the machine code too.
+[[gnu::noinline]] auto hot_loop(uint64_t n) -> uint64_t {
+    uint64_t x = 1;
+    // clang-format off
+    for (uint64_t i = 0; i < n; ++i) { x = x * 6364136223846793005ULL + i; } // WAGGLE_TEST_HOT_LINE
+    // clang-format on
+    return x;
+}
+
+[[gnu::noinline]] auto cool_loop(uint64_t n) -> uint64_t {
+    uint64_t x = 3;
+    // clang-format off
+    for (uint64_t i = 0; i < n; ++i) { x = x * 2862933555777941757ULL + i; } // WAGGLE_TEST_COOL_LINE
+    // clang-format on
+    return x;
+}
+
+} // namespace
+
+// Run by tests/sampling_session.py: a zone whose work is nine parts one loop and one part another,
+// for `waggle cpu --lines` to find the first loop's line with about 90% of the zone's samples. The
+// clock is read once a round, not in the loops, so its time stays out of their lines.
+TEST_CASE("Sampling - a program with one hot line", "[.hot_line]") {
+    auto      &prof = Profiler::instance();
+    auto const end  = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (std::chrono::steady_clock::now() < end) {
+        prof.push("hot_line", "test.cpp", 30, "test");
+        g_sink += hot_loop(9'000'000);
+        g_sink += cool_loop(1'000'000);
+        prof.pop();
+    }
+}

@@ -54,7 +54,7 @@ Each session holds:
     The allocation track and device work, as in the stream.
 ``extensions``
     What libraries added, each under its own namespaced key (``einsums.compute_graphs``), and the collector's own:
-    ``cpu``, with the ``sampling`` source: ``schema`` (``"waggle.cpu/1"``), ``sampling`` (``event``, ``rate_hz``, ``threads``, ``samples``, ``lost``), ``zones``, each with its ``thread``, its ``path`` of zone names from the thread's root, its ``samples`` and its ``addresses`` (hexadecimal address to samples, most first), and ``no_zone``, the samples taken outside every zone, in the same form.
+    ``cpu``, with the ``sampling`` source: ``schema`` (``"waggle.cpu/1"``), ``sampling`` (``event``, ``rate_hz``, ``threads``, ``samples``, ``lost``), ``modules``, each loaded file's ``path``, ``build_id`` (hexadecimal, empty when it has none, and then its ``size`` and ``mtime_ns`` instead), load ``base`` and executable address ``ranges``, ``zones``, each with its ``thread``, its ``path`` of zone names from the thread's root, its ``samples`` and its ``addresses`` (hexadecimal address to samples, most first), and ``no_zone``, the samples taken outside every zone, in the same form.
 
 The viewer's own saves nest the trees under ``snapshot`` and add ``bookmarks`` and ``node_history``; both shapes load.
 

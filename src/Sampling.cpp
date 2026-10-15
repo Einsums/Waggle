@@ -21,12 +21,16 @@
 #if defined(__linux__)
 #    include <ctime>
 #    include <dirent.h>
+#    include <link.h>
 #    include <linux/perf_event.h>
 #    include <sys/mman.h>
+#    include <sys/stat.h>
 #    include <sys/syscall.h>
 #    include <unistd.h>
 
 #    include "CounterBackend.hpp"
+#    include "Detail/JsonEscape.hpp"
+#    include "Process.hpp"
 #endif
 
 WAGGLE_NAMESPACE_BEGIN
@@ -123,6 +127,87 @@ auto parse_record(void const *bytes, std::size_t size, Sample &sample, uint64_t 
 #if defined(__linux__)
 
 static_assert(sizeof(RecordHeader) == sizeof(perf_event_header));
+
+namespace {
+
+struct Module {
+    std::string                                  path;
+    std::string                                  build_id;
+    uintptr_t                                    base{0};
+    int64_t                                      size{0};     ///< of the file, for one without a build id
+    int64_t                                      mtime_ns{0}; ///< likewise
+    std::vector<std::pair<uintptr_t, uintptr_t>> ranges;
+};
+
+/// The GNU build id in the note segment at @p notes, @p size bytes long and aligned to @p align.
+auto build_id_in(unsigned char const *notes, std::size_t size, std::size_t align) -> std::string {
+    auto const  padded = [align](std::size_t n) { return (n + align - 1) / align * align; };
+    std::size_t at     = 0;
+    while (at + sizeof(ElfW(Nhdr)) <= size) {
+        ElfW(Nhdr) note{};
+        std::memcpy(&note, notes + at, sizeof(note));
+        std::size_t const name = at + sizeof(note);
+        std::size_t const desc = name + padded(note.n_namesz);
+        if (desc + note.n_descsz > size) {
+            break;
+        }
+        if (note.n_type == NT_GNU_BUILD_ID && note.n_namesz == 4 && std::memcmp(notes + name, "GNU", 4) == 0) {
+            std::string hex;
+            for (std::size_t i = 0; i < note.n_descsz; ++i) {
+                hex += fmt::format("{:02x}", notes[desc + i]);
+            }
+            return hex;
+        }
+        at = desc + padded(note.n_descsz);
+    }
+    return {};
+}
+
+auto add_module(dl_phdr_info *info, std::size_t /*size*/, void *data) -> int {
+    auto  &modules = *static_cast<std::vector<Module> *>(data);
+    Module module{.path = info->dlpi_name != nullptr ? info->dlpi_name : "", .build_id = {}, .base = info->dlpi_addr};
+    // The loader names every object but the executable, which comes first.
+    if (module.path.empty() && modules.empty()) {
+        module.path = executable_path();
+    }
+    for (ElfW(Half) i = 0; i < info->dlpi_phnum; ++i) {
+        ElfW(Phdr) const &phdr  = info->dlpi_phdr[i];
+        auto const        start = info->dlpi_addr + phdr.p_vaddr;
+        if (phdr.p_type == PT_LOAD && (phdr.p_flags & PF_X) != 0) {
+            module.ranges.emplace_back(start, start + phdr.p_memsz);
+        } else if (phdr.p_type == PT_NOTE && module.build_id.empty()) {
+            module.build_id = build_id_in(reinterpret_cast<unsigned char const *>(start), phdr.p_memsz, phdr.p_align == 8 ? 8 : 4);
+        }
+    }
+    // Many toolchains link no build id (conda-forge's among them): the file's size and time then
+    // tell a rebuilt file from the one that ran, as long as it was not rebuilt while running.
+    if (struct stat st{}; module.build_id.empty() && stat(module.path.c_str(), &st) == 0) {
+        module.size     = st.st_size;
+        module.mtime_ns = int64_t{st.st_mtim.tv_sec} * 1'000'000'000 + st.st_mtim.tv_nsec;
+    }
+    if (!module.ranges.empty()) {
+        modules.push_back(std::move(module));
+    }
+    return 0;
+}
+
+} // namespace
+
+auto module_map_json() -> std::string {
+    std::vector<Module> modules;
+    dl_iterate_phdr(&add_module, &modules);
+    std::string out = "[";
+    for (auto const &module : modules) {
+        out += fmt::format(R"({}{{"path": "{}", "build_id": "{}", "size": {}, "mtime_ns": {}, "base": "0x{:x}", "ranges": [)",
+                           out.size() > 1 ? ", " : "", detail::json_escape(module.path), module.build_id, module.size, module.mtime_ns,
+                           module.base);
+        for (std::size_t i = 0; i < module.ranges.size(); ++i) {
+            out += fmt::format(R"({}["0x{:x}", "0x{:x}"])", i > 0 ? ", " : "", module.ranges[i].first, module.ranges[i].second);
+        }
+        out += "]}";
+    }
+    return out + "]";
+}
 
 namespace {
 
@@ -343,6 +428,10 @@ auto Sampler::event() const -> std::string {
 }
 
 #else
+
+auto module_map_json() -> std::string {
+    return "[]";
+}
 
 struct Sampler::Ring {};
 

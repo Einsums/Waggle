@@ -59,8 +59,10 @@ def node_details(
     baseline: ProfileSnapshot | None = None,
     history: str = "",
     bookmarked: bool = False,
+    hot_lines: list[dict] | None = None,
 ) -> str:
-    """The detail panel's markup for *node*; *pct* is its share of the thread's exclusive time."""
+    """The detail panel's markup for *node*; *pct* is its share of the thread's exclusive time.
+    *hot_lines* are the zone's, every thread's together, from ``waggle.cpu.summary``."""
     lines = [
         f"[bold]{escape(node.name)}[/bold]{' ⚑' if bookmarked else ''}",
         f"  exclusive: {node.exclusive_ms:.3f} ms  ({pct:.1f}%)    calls: {node.call_count}    avg: {node.mean_ms:.3f} ms",
@@ -100,6 +102,11 @@ def node_details(
     if node.energy_nj:
         e_core = 100.0 * node.e_core_energy_nj / node.energy_nj
         lines.append(f"  [bold]Energy:[/bold]  {node.energy_nj / 1e6:.3f} mJ    {e_core:.0f}% on efficiency cores")
+    if hot_lines:
+        lines.append("  [bold]Hot lines[/bold] (sampled, every thread):")
+        for hot in hot_lines:
+            where = f"{Path(hot['file']).name}:{hot['line']}" if hot.get("file") else "(no line information)"
+            lines.append(f"    {hot['samples_pct']:5.1f}%  {escape(where)}  {escape(hot['function'])}")
     if node.annotations:
         lines.append("  [bold]Annotations:[/bold]")
         lines += [f"    {escape(k)} = {_annotation_text(v)}" for k, v in node.annotations.items()]
