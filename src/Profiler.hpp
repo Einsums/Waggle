@@ -454,6 +454,10 @@ struct WAGGLE_EXPORT Profiler {
         /// Whether this thread reads hardware counters: the counters source was asked for when it
         /// registered, and its counters opened.
         bool counters{false};
+        /// Whether each Push is written as its zone opens rather than once something happens inside
+        /// it: the sampling source credits a sample by the zones open in the ring when it is read, so
+        /// an open zone must be there. Set for every thread as the source is switched.
+        std::atomic<bool> push_now{false};
         /// Its open counters.
         ThreadCounters counter_state{};
         /// Whether this thread's zones are also emitted to the platform's tracing tool
@@ -523,6 +527,9 @@ struct WAGGLE_EXPORT Profiler {
     std::atomic<bool> _counters_wanted{false};
     /// Likewise for the signposts source.
     std::atomic<bool> _signposts_wanted{false};
+    /// Whether the sampling source is asked for, which every thread's @ref ThreadChannel::push_now
+    /// follows. Changed under _channels_mutex, so a thread registering takes the value in force.
+    std::atomic<bool> _sampling_wanted{false};
 
     /// The next device submission's token; 0 is none.
     std::atomic<uint64_t> _next_device_token{1};
@@ -566,8 +573,8 @@ struct WAGGLE_EXPORT Profiler {
 
     /// Record a zone opening on @p ch: one clock read. Its Push is written when something happens
     /// inside it, which this does for the zone it opens in; a zone with nothing inside is written
-    /// whole when it closes. With hardware counters, which must be read as it opens, its Push is
-    /// written now.
+    /// whole when it closes. With hardware counters, which must be read as it opens, and with
+    /// sampling, its Push is written now.
     WAGGLE_FORCEINLINE void write_push(ThreadChannel &ch, uint32_t site_id, uint32_t name_id) {
         // Counted even when the event is dropped: the consumer resynchronizes on it.
         uint32_t const depth = ++ch.depth;
@@ -577,10 +584,12 @@ struct WAGGLE_EXPORT Profiler {
         if (ch.pending != 0) {
             write_pending_push(ch);
         }
-        if (ch.counters) {
+        if (ch.counters || ch.push_now.load(std::memory_order_relaxed)) {
             if (Event *evt = ch.ring.try_claim()) {
                 *evt = Event{.ticks = TickClock::now(), .type = EventType::Push, .site_id = site_id, .name_id = name_id, .depth = depth};
-                read_counters(ch, *evt);
+                if (ch.counters) {
+                    read_counters(ch, *evt);
+                }
                 ch.ring.commit();
             }
             wake_consumer_if_filling(ch);

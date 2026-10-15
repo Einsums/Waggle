@@ -37,16 +37,30 @@ long perf_event_open(struct perf_event_attr *attr, pid_t pid, int cpu, int group
     return syscall(__NR_perf_event_open, attr, pid, cpu, group_fd, flags);
 }
 
-/// Why perf_event_open failed with @p error, in terms a person can act on.
-auto refusal(int error) -> std::string {
+} // namespace
+
+auto perf_refusal(int error) -> std::string {
     std::string paranoid;
     std::ifstream("/proc/sys/kernel/perf_event_paranoid") >> paranoid;
     switch (error) {
     case EACCES:
-    case EPERM:
+    case EPERM: {
+        // At 2 or less the kernel lets a process watch its own threads, so a refusal then comes from
+        // something else: a container runtime's seccomp profile, which blocks the call outright.
+        int level = 3;
+        try {
+            level = std::stoi(paranoid);
+        } catch (...) { // NOLINT(bugprone-empty-catch): unreadable, so the kernel's level is the likely cause
+        }
+        if (level <= 2) {
+            return fmt::format("perf_event_open was refused although kernel.perf_event_paranoid is {}: a container's seccomp "
+                               "profile blocks it unless the container is given CAP_PERFMON",
+                               paranoid);
+        }
         return fmt::format("perf_event_open was refused (kernel.perf_event_paranoid is {}; 2 or less lets a process count its own "
-                           "threads)",
+                           "threads: sysctl kernel.perf_event_paranoid=2)",
                            paranoid.empty() ? "unknown" : paranoid);
+    }
     case ENOENT:
     case EOPNOTSUPP:
     case ENODEV:
@@ -57,8 +71,6 @@ auto refusal(int error) -> std::string {
         return fmt::format("perf_event_open failed: {}", std::strerror(error));
     }
 }
-
-} // namespace
 
 PerfCounterBackend::PerfCounterBackend()
     : PerfCounterBackend({{"cycles", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES},
@@ -86,7 +98,7 @@ auto PerfCounterBackend::open(ThreadCounters &tc) -> bool {
         pe.read_format    = PERF_FORMAT_GROUP; // one read() returns the whole group
         int const fd      = static_cast<int>(perf_event_open(&pe, 0, -1, i == 0 ? -1 : tc.fds[0], 0));
         if (fd < 0) {
-            std::string why = refusal(errno);
+            std::string why = perf_refusal(errno);
             close(tc);
             std::scoped_lock const lock(_mutex);
             _why_not = std::move(why);

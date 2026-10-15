@@ -1,7 +1,7 @@
 # Copyright (c) The Einsums Developers. All rights reserved.
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 
-"""The ``waggle`` command: the terminal viewer, and ``report`` and ``diff`` for saved sessions.
+"""The ``waggle`` command: the terminal viewer, and ``report``, ``diff`` and ``cpu`` for saved sessions.
 
 A library that ships its own command (``einsums profiler``) calls :func:`main` with its program
 name, its plugins, a window title and how its programs start a server.
@@ -16,7 +16,7 @@ from collections.abc import Sequence
 from .client import DEFAULT_HOST, DEFAULT_PORT, parse_endpoint
 
 #: Subcommands that work on saved sessions without the viewer.
-ACTIONS = ("report", "diff")
+ACTIONS = ("report", "diff", "cpu")
 
 
 def viewer_parser(prog: str, server_hint: str = "WAGGLE_SERVER=1") -> argparse.ArgumentParser:
@@ -46,9 +46,9 @@ def main(
     title: str = "Waggle",
     server_hint: str = "WAGGLE_SERVER=1",
 ) -> int:
-    """Run the command line @p argv: ``report`` or ``diff`` first, else the viewer's arguments.
+    """Run the command line @p argv: ``report``, ``diff`` or ``cpu`` first, else the viewer's arguments.
 
-    The viewer takes servers as positional arguments, so ``report`` and ``diff`` cannot be
+    The viewer takes servers as positional arguments, so ``report``, ``diff`` and ``cpu`` cannot be
     ordinary subcommands beside them; the first argument picks. ``view`` may name the viewer
     explicitly.
     """

@@ -33,7 +33,8 @@ struct Settings {
     std::int64_t max_distinct_children{256}; ///< Distinct child names per node before the rest fold into "(other)"; 0 for no limit.
     std::string  disabled_domains{};         ///< Libraries whose zones are not recorded, comma-separated (``einsums,mylib``).
     std::string  sources{};                  ///< Optional instruments to turn on, comma-separated (``openmp``).
-    std::string  trace{}; ///< Write every zone to a Perfetto trace here (``{pid}`` becomes the process id); empty for none.
+    std::string  trace{};            ///< Write every zone to a Perfetto trace here (``{pid}`` becomes the process id); empty for none.
+    std::int64_t sampling_rate{997}; ///< Samples per second per thread, for the ``sampling`` source.
 };
 
 /// Some settings to change; an empty member leaves that setting alone.
@@ -51,6 +52,7 @@ struct SettingsUpdate {
     std::optional<std::string>  disabled_domains;
     std::optional<std::string>  sources;
     std::optional<std::string>  trace;
+    std::optional<std::int64_t> sampling_rate;
 };
 
 /// How much a profiler message matters.

@@ -95,6 +95,17 @@ add_dependencies(waggle_tests waggle_Energy_test)
 add_test(NAME ${WAGGLE_TEST_PREFIX}Energy COMMAND waggle_Energy_test)
 set_tests_properties(${WAGGLE_TEST_PREFIX}Energy PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false;WAGGLE_SOURCES=energy" TIMEOUT 300 SKIP_RETURN_CODE 4)
 
+# The sampling source: the record parser and the merge by time with samples the test makes, then,
+# asked for in the environment, against the kernel; where perf_event cannot sample it says why and
+# skips (Catch2's exit code 4).
+add_executable(waggle_Sampling_test unit/Sampling.cpp)
+target_link_libraries(waggle_Sampling_test PRIVATE Waggle::internal Catch2::Catch2WithMain)
+add_dependencies(waggle_tests waggle_Sampling_test)
+add_test(NAME ${WAGGLE_TEST_PREFIX}Sampling COMMAND waggle_Sampling_test "~[source]")
+set_tests_properties(${WAGGLE_TEST_PREFIX}Sampling PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false" TIMEOUT 300)
+add_test(NAME ${WAGGLE_TEST_PREFIX}SamplingSource COMMAND waggle_Sampling_test "[source]")
+set_tests_properties(${WAGGLE_TEST_PREFIX}SamplingSource PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false;WAGGLE_SOURCES=sampling" TIMEOUT 300 SKIP_RETURN_CODE 4)
+
 # The OpenMP source against a runtime with OMPT: LLVM's libomp, which also serves GCC-compiled code
 # through its GOMP entry points. So the test compiles with the compiler's OpenMP flag but links
 # libomp itself, never GCC's libgomp, which has no OMPT. MSVC's runtime has none either.
@@ -216,6 +227,24 @@ add_test(NAME ${WAGGLE_TEST_PREFIX}ExitWithoutFinalizeSession
 )
 set_tests_properties(${WAGGLE_TEST_PREFIX}ExitWithoutFinalizeSession PROPERTIES FIXTURES_REQUIRED waggle_exit_outputs)
 
+# The save setting writes a session file with no server running.
+set(_saved_session ${CMAKE_CURRENT_BINARY_DIR}/save_without_server_session.json)
+add_executable(waggle_SaveWithoutServer_test unit/SaveWithoutServer.cpp)
+target_link_libraries(waggle_SaveWithoutServer_test PRIVATE Waggle::waggle)
+add_dependencies(waggle_tests waggle_SaveWithoutServer_test)
+add_test(NAME ${WAGGLE_TEST_PREFIX}SaveWithoutServerClean COMMAND ${CMAKE_COMMAND} -E rm -f ${_saved_session})
+set_tests_properties(${WAGGLE_TEST_PREFIX}SaveWithoutServerClean PROPERTIES FIXTURES_SETUP waggle_save_clean)
+add_test(NAME ${WAGGLE_TEST_PREFIX}SaveWithoutServer COMMAND waggle_SaveWithoutServer_test)
+set_tests_properties(
+  ${WAGGLE_TEST_PREFIX}SaveWithoutServer PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false;WAGGLE_SAVE=${_saved_session}" FIXTURES_REQUIRED
+                                                    waggle_save_clean FIXTURES_SETUP waggle_save_ran TIMEOUT 300
+)
+add_test(NAME ${WAGGLE_TEST_PREFIX}SaveWithoutServerSession
+         COMMAND ${CMAKE_COMMAND} -DFILE=${_saved_session} "-DEXPECT=save: without a server" -P
+                 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_contains.cmake
+)
+set_tests_properties(${WAGGLE_TEST_PREFIX}SaveWithoutServerSession PROPERTIES FIXTURES_REQUIRED waggle_save_ran)
+
 # A second, separately built copy of the collector, for the test that loads two at once. Its sources
 # and settings are the collector's own; only the file differs.
 get_target_property(_waggle_sources waggle SOURCES)
@@ -266,6 +295,21 @@ if(Python3_Interpreter_FOUND)
   else()
     message(STATUS "Waggle: pytest not found; the viewer's tests are not registered")
   endif()
+
+  # The sampling source end to end: a program run with WAGGLE_SOURCES=sampling saves a session, and
+  # `waggle cpu` reads its samples back. Skipped (exit code 4) where perf_event cannot sample.
+  if(WAGGLE_BUILD_PYTHON)
+    set(_waggle_sampling_python_path "${_waggle_python_dir}")
+  else()
+    set(_waggle_sampling_python_path "${PROJECT_SOURCE_DIR}/python")
+  endif()
+  add_test(NAME ${WAGGLE_TEST_PREFIX}SamplingSession COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/sampling_session.py
+                                                           $<TARGET_FILE:waggle_Sampling_test>
+  )
+  set_tests_properties(
+    ${WAGGLE_TEST_PREFIX}SamplingSession PROPERTIES ENVIRONMENT "PYTHONPATH=${_waggle_sampling_python_path}" TIMEOUT 300 SKIP_RETURN_CODE 4
+                                                   PASS_REGULAR_EXPRESSION "sampling: [0-9]+ samples as expected"
+  )
 endif()
 
 # What one zone costs, whole and in pieces. Not a test: run it by hand, paired against another build,

@@ -46,6 +46,12 @@ namespace energy {
 WAGGLE_EXPORT auto status() -> SourceStatus;
 } // namespace energy
 
+namespace sampling {
+/// The sampling source: where each zone's time goes, by instruction address, from the kernel
+/// sampling every thread of the process (Linux perf_event).
+WAGGLE_EXPORT auto status() -> SourceStatus;
+} // namespace sampling
+
 namespace signposts {
 /// The signposts source: every zone also emitted as an os_signpost interval, so Instruments shows
 /// them beside its own tracks, one category per library. macOS only.

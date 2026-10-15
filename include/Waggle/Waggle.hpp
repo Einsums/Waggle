@@ -113,6 +113,7 @@ auto apply_settings(SettingsUpdate const &update, Set set) -> int {
     one("disabled_domains", update.disabled_domains);
     one("sources", update.sources);
     one("trace", update.trace);
+    one("sampling_rate", update.sampling_rate);
     std::vector<char const *> values;
     values.reserve(texts.size());
     for (auto const &text : texts) {
@@ -248,6 +249,7 @@ inline Settings settings() {
     text("disabled_domains", s.disabled_domains);
     text("sources", s.sources);
     text("trace", s.trace);
+    number("sampling_rate", s.sampling_rate);
     return s;
 }
 

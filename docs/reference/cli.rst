@@ -6,7 +6,7 @@
 Command line
 ============
 
-``waggle`` opens the viewer; ``waggle report`` and ``waggle diff`` read saved sessions without it.
+``waggle`` opens the viewer; ``waggle report``, ``waggle diff`` and ``waggle cpu`` read saved sessions without it.
 ``python -m waggle`` is the same command.
 
 waggle
@@ -23,3 +23,8 @@ waggle diff
 ===========
 
 .. waggle-cli:: diff
+
+waggle cpu
+==========
+
+.. waggle-cli:: cpu

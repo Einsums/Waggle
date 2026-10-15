@@ -96,18 +96,23 @@ class WAGGLE_EXPORT Server {
     void export_session(std::string const &path, std::string const &label = "",
                         std::vector<std::pair<std::string, std::string>> const &extra_json = {});
 
+    /// Write the session file as @ref export_session does, with no server: the ``save`` setting
+    /// writes one whether or not a server runs. @p seq is the snapshot count recorded in it.
+    static void write_session(Consumer &consumer, RequestHandlers const &handlers, std::string const &path, std::string const &label = "",
+                              std::vector<std::pair<std::string, std::string>> const &extra_json = {}, uint64_t seq = 0);
+
   private:
-    void accept_clients();
-    void send_snapshot_to(socket_t fd);
-    void send_updates();
-    void write_node_json(std::string &out, AggNode const &n);
-    void write_timeline_json(std::string &out);
+    void        accept_clients();
+    void        send_snapshot_to(socket_t fd);
+    void        send_updates();
+    static void write_node_json(std::string &out, AggNode const &n);
+    void        write_timeline_json(std::string &out);
 
     /// A ``memory`` line: the allocation track's samples after @p after, and the largest live
     /// allocations. Caller holds the consumer's shared lock.
     /// The device work summary, a "devices" line; nothing when there is none.
-    void write_devices_json(std::string &out);
-    void write_memory_json(std::string &out, uint64_t after);
+    static void write_devices_json(std::string &out, Consumer &consumer);
+    static void write_memory_json(std::string &out, Consumer &consumer, uint64_t after);
 
     /// The largest live allocations a ``memory`` message lists.
     static constexpr size_t kLiveAllocationsShown = 50;

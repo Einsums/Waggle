@@ -201,6 +201,17 @@ void Profiler::apply(Settings const &s) {
     // Energy is sampled by the consumer for every recording thread, whenever it was asked for.
     std::string why_not;
     _consumer->set_energy(source_requested(s, "energy") && energy_available(why_not));
+    // Sampling too, for every thread of the process: the consumer opens the events, and every
+    // recording thread writes its pushes as they happen, so the zones open at a sample are known.
+    {
+        bool const             sampling = source_requested(s, "sampling");
+        std::scoped_lock const lock(_channels_mutex);
+        _sampling_wanted.store(sampling, std::memory_order_relaxed);
+        for (auto const &channel : _channels) {
+            channel->push_now.store(sampling, std::memory_order_relaxed);
+        }
+        _consumer->set_sampling(sampling, static_cast<uint64_t>(std::max<std::int64_t>(s.sampling_rate, 0)));
+    }
     _consumer->set_max_distinct_children(s.max_distinct_children);
     // "{pid}" keeps the processes of one run, MPI ranks say, from writing one file.
     std::string trace = s.trace;
@@ -284,12 +295,15 @@ void Profiler::finalize(std::string const &client) {
 
 void Profiler::finish(bool at_exit) {
     Settings const s = settings();
-    // The session file first: it is written by the server, which shutdown() stops.
+    // The session file first, while the consumer, and the server if one runs, are still up.
     try {
         if (!s.save.empty()) {
             flush();
+            // Through the server when one runs, which numbers its snapshots; without one all the same.
             if (auto *srv = server()) {
                 srv->export_session(s.save);
+            } else {
+                Server::write_session(*_consumer, _handlers, s.save);
             }
         }
     } catch (std::exception const &e) {
@@ -412,6 +426,7 @@ auto Profiler::register_thread() -> ThreadChannel & {
     }
 
     std::scoped_lock const lock(_channels_mutex);
+    channel->push_now.store(_sampling_wanted.load(std::memory_order_relaxed), std::memory_order_relaxed);
     _channels.push_back(channel);
     return *channel;
 }
@@ -790,6 +805,10 @@ void Profiler::print_node_recursive(std::ostream &os, AggNode const *n, double /
             if (node->energy_nj > 0) {
                 line(os, "{:6}   Energy: {:.3f} mJ, {:.0f}% on efficiency cores", "", static_cast<double>(node->energy_nj) / 1e6,
                      100.0 * static_cast<double>(node->e_core_energy_nj) / static_cast<double>(node->energy_nj));
+            }
+            if (node->samples.total > 0) {
+                line(os, "{:6}   Samples: {}{}", "", node->samples.total,
+                     node->samples.total < 200 ? " (under 200: a longer run gives a surer share)" : "");
             }
             // Show numeric annotation stats in detailed mode
             if (!node->numeric_annotations.empty()) {

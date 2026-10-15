@@ -4,7 +4,7 @@
 """Directives that render tables from Waggle itself, so the documentation cannot drift from it.
 
 ``.. waggle-keymap::`` renders the viewer's keys from ``waggle.app.KEYMAP``, the same list the
-bindings and the in-app help come from. ``.. waggle-cli:: viewer|report|diff`` renders the
+bindings and the in-app help come from. ``.. waggle-cli:: viewer|report|diff|cpu`` renders the
 command's ``--help`` from its argument parser.
 """
 
@@ -37,7 +37,7 @@ class KeymapDirective(SphinxDirective):
 
 
 class CliDirective(SphinxDirective):
-    """The ``--help`` of ``waggle`` (the viewer), ``waggle report`` or ``waggle diff``."""
+    """The ``--help`` of ``waggle`` (the viewer), ``waggle report``, ``waggle diff`` or ``waggle cpu``."""
 
     required_arguments = 1
 

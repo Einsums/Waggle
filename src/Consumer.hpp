@@ -28,6 +28,7 @@
 #include "Detail/InsertionOrderedMap.hpp"
 #include "Event.hpp"
 #include "RingBuffer.hpp"
+#include "Sampling.hpp"
 #include "Sites.hpp"
 #include "StringTable.hpp"
 #include "Trace.hpp"
@@ -38,6 +39,21 @@ WAGGLE_NAMESPACE_BEGIN
 static constexpr size_t kRingBufferCapacity = 65536;
 
 using EventRingBuffer = RingBuffer<Event, kRingBufferCapacity>;
+
+/// Samples credited to one zone (or to none), counted by the instruction address each was taken at.
+struct SampleCounts {
+    uint64_t                               total{0};
+    std::unordered_map<uint64_t, uint64_t> by_address;
+
+    void add(uint64_t ip) {
+        ++total;
+        ++by_address[ip];
+    }
+    void clear() {
+        total = 0;
+        by_address.clear();
+    }
+};
 
 // ---------------------- Aggregation node ----------------------
 struct AggNode {
@@ -89,6 +105,10 @@ struct AggNode {
     /// taken. Exclusive, as time is; a parent's inclusive energy is its own and its children's.
     uint64_t energy_nj{0};
     uint64_t e_core_energy_nj{0};
+
+    /// The sampling source's samples taken while this zone was the innermost open one on its
+    /// thread. Exclusive, as time is.
+    SampleCounts samples;
 
     // Per-call log2 histogram: 21 buckets from 1us to ~2s (bucket i = [2^i us, 2^(i+1) us))
     static constexpr int kHistogramBuckets = 21;
@@ -223,6 +243,38 @@ class WAGGLE_EXPORT Consumer {
     void set_energy(bool on) { _energy_on.store(on, std::memory_order_relaxed); }
     /// Energy readings taken so far, for the energy source's status.
     [[nodiscard]] auto energy_reads() const -> uint64_t { return _energy_reads.load(std::memory_order_relaxed); }
+
+    /// Sample every thread of the process at @p rate_hz, crediting each sample to the zone open on
+    /// its thread when it was taken (the sampling source); off when @p on is false. Safe while the
+    /// consumer runs: its next pass opens or closes the events.
+    void set_sampling(bool on, uint64_t rate_hz);
+
+    /// What the sampling source is doing, for its status. Safe from any thread.
+    struct SamplingState {
+        bool        wanted{false};
+        bool        running{false};
+        std::string event;
+        uint64_t    rate_hz{0};
+        uint64_t    threads{0};
+        uint64_t    refused{0};
+        uint64_t    samples{0};
+        uint64_t    lost{0};
+        std::string why_not; ///< why sampling could not start, or why some thread could not be sampled
+    };
+    [[nodiscard]] auto sampling_state() const -> SamplingState;
+
+    /// Hand the consumer samples as if the sampler had read them; its next pass takes them before it
+    /// reads any event. For tests of the merge by time, which need samples at chosen times. Takes no
+    /// tree lock, so a test can call it while holding the shared lock to keep events unread.
+    void add_samples(std::vector<sampling::Sample> const &samples);
+
+    /// Samples taken outside every zone: on a thread with none open, or one that never records.
+    /// Caller must hold the shared lock.
+    [[nodiscard]] auto unzoned_samples() const -> SampleCounts const & { return _unzoned; }
+
+    /// The session file's "cpu" extension: the sampler and each zone's samples by address. Empty
+    /// when sampling never ran. Caller must hold the shared lock.
+    [[nodiscard]] auto cpu_json() const -> std::string;
 
     /// Write every zone from now on to a Perfetto trace at @p path, after closing any trace being
     /// written; an empty path just closes it. The same path again changes nothing. Returns why the
@@ -400,6 +452,47 @@ class WAGGLE_EXPORT Consumer {
     void                    sample_energy(ThreadRegistration const &reg);
     /// Credit @p thread's samples taken before @p ticks to its innermost open zone.
     void credit_energy(uint32_t thread_id, ThreadState &ts, uint64_t ticks);
+
+    /// The sampling source. Each pass reads the perf rings before the event rings, so a sample
+    /// taken before the pass began waits only for its thread's events up to then: crediting it to
+    /// the zone open at its time needs nothing later. Samples wait by kernel thread id; those taken
+    /// after the pass began wait for the next. Under _tree_mutex, except the switches and the state.
+    struct WaitingSample {
+        uint64_t ticks;
+        uint64_t ip;
+    };
+    sampling::Sampler                                       _sampler;
+    std::atomic<bool>                                       _sampling_on{false};
+    std::atomic<uint64_t>                                   _sampling_rate{997};
+    std::atomic<bool>                                       _sampling_busy{false}; ///< running, or samples waiting
+    std::atomic<uint64_t>                                   _sampling_settings{0}; ///< bumped as they change
+    uint64_t                                                _sampling_tried{0};    ///< the settings last started with
+    bool                                                    _sampling_ever{false};
+    uint64_t                                                _samples_taken{0};
+    std::chrono::steady_clock::time_point                   _last_rescan{};
+    size_t                                                  _rescanned_registrations{0};
+    uint64_t                                                _consumer_tid{0};
+    std::unordered_map<uint64_t, std::deque<WaitingSample>> _waiting_samples;           ///< by kernel thread id
+    std::unordered_map<uint64_t, uint32_t>                  _thread_of_kernel;          ///< kernel id -> thread id
+    std::deque<WaitingSample>                              *_draining_samples{nullptr}; ///< the thread being drained's
+    SampleCounts                                            _unzoned;
+    std::mutex                                              _added_mutex;
+    std::vector<sampling::Sample>                           _added_samples;   ///< from add_samples, for the next pass
+    sampling::ClockPair                                     _sample_anchor{}; ///< read as each pass reads samples
+    static constexpr size_t                                 kMaxWaitingSamples = 16384;
+    mutable std::mutex                                      _sampling_state_mutex;
+    SamplingState                                           _sampling_state;
+
+    /// Hold @p sample until its thread's events say which zone was open when it was taken.
+    void queue_sample(sampling::Sample const &sample);
+    /// Start, stop, rescan and read the sampler as the settings and the threads ask: the first part
+    /// of a pass.
+    void run_sampler(size_t registrations);
+    /// Credit samples waiting in @p waiting taken before @p ticks to @p ts's innermost open zone, or
+    /// to no zone when @p ts is null or has none open.
+    void credit_samples(std::deque<WaitingSample> &waiting, ThreadState *ts, uint64_t ticks);
+    /// Credit every sample taken before @p ticks: the last part of a pass.
+    void credit_waiting_samples(uint64_t ticks);
 
     // Tick callback (the server's), installed after the consumer thread starts.
     std::mutex            _tick_mutex;

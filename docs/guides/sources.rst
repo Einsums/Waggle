@@ -95,6 +95,35 @@ Worksharing chunks and explicit tasks are not recorded: a loop of many small chu
 Regions are named from the code address of the call into the runtime, using the module's symbol table, so functions with hidden visibility are named too.
 A region that shares nothing with its function and comes last in it can be compiled as a jump into the runtime, and is then named after the function's caller.
 
+sampling
+========
+
+Where each zone's CPU time goes, by instruction address, on Linux: the kernel interrupts every thread of the process about a thousand times a second, records where it was, and each sample is credited to the zone open on its thread at that moment.
+
+.. code-block:: console
+
+    $ WAGGLE_SOURCES=sampling WAGGLE_SAVE=run.json ./myprogram
+    $ waggle cpu run.json
+
+The samples come from ``perf_event_open``: hardware cycles at ``sampling_rate`` (997 Hz) per thread, user space only, which ``kernel.perf_event_paranoid`` 2 allows; on a machine without hardware counters, as many virtual machines are, the software CPU clock instead.
+Each thread's samples go into a 64 KB ring of its own, which the consumer reads as it drains; a sample is stamped with ``CLOCK_MONOTONIC``, the clock zones are on, so it lands in the right zone without the recording thread doing anything.
+
+What that means for the numbers:
+
+* A zone's samples are *exclusive*, as its time is: a parent's own samples exclude its children's.
+* Every thread is sampled, not only those that record zones, because time inside a BLAS library runs on pool threads that never open one.
+  Threads are found as they record and by a scan of ``/proc/self/task`` every second, so a thread that lives under a second and never records can be missed.
+  A sample on a thread with no zone open is in ``(no zone)``.
+* A zone with fewer than 200 samples has a share a longer run could move; ``waggle cpu`` marks it.
+  The fix is a longer run, not a faster rate.
+* Samples lost to a full ring are counted, and the status gives the count.
+
+With the source on, each thread writes a zone's opening as it happens, so the consumer knows which zones are open when it reads a sample; a zone with nothing inside then costs two events rather than one.
+The consumer's own thread is not sampled.
+``waggle cpu`` ranks zones by their share of the samples; ``--zone NAME`` lists one zone's samples by address.
+Addresses are named by source line in a later release.
+The source reports ``unavailable`` on macOS and Windows, and where the kernel or a container's seccomp profile refuses ``perf_event_open``, saying what to change.
+
 signposts
 =========
 

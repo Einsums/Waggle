@@ -38,6 +38,7 @@ add_library(
   src/Mdns.cpp
   src/Ompt.cpp
   src/Process.cpp
+  src/Sampling.cpp
   src/Server.cpp
   src/Settings.cpp
   src/Signposts.cpp

@@ -68,6 +68,10 @@ class NoopCounterBackend : public CounterBackend {
 };
 
 #ifdef __linux__
+/// Why perf_event_open failed with @p error, in terms a person can act on: the sysctl to change, a
+/// container's seccomp profile, or a machine with no counters. The counters and sampling sources'.
+WAGGLE_EXPORT auto perf_refusal(int error) -> std::string;
+
 /// Linux perf_event_open: a group of counters, read together in one system call.
 class WAGGLE_EXPORT PerfCounterBackend : public CounterBackend {
   public:

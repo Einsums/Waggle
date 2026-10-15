@@ -9,13 +9,17 @@
 
 #include <Waggle/Clock.hpp>
 
+#include <fmt/format.h>
+
 #include <algorithm>
 #include <limits>
 #include <string>
 #include <unordered_set>
 #include <vector>
 
+#include "Detail/JsonEscape.hpp"
 #include "Energy.hpp"
+#include "Process.hpp"
 
 WAGGLE_NAMESPACE_BEGIN
 
@@ -207,6 +211,180 @@ void Consumer::credit_energy(uint32_t thread_id, ThreadState &ts, uint64_t ticks
     }
 }
 
+void Consumer::set_sampling(bool on, uint64_t rate_hz) {
+    bool const was = _sampling_on.exchange(on, std::memory_order_relaxed);
+    if (_sampling_rate.exchange(rate_hz, std::memory_order_relaxed) != rate_hz || was != on) {
+        _sampling_settings.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (on) {
+        _wake_cv.notify_one();
+    }
+}
+
+auto Consumer::sampling_state() const -> SamplingState {
+    std::scoped_lock const lock(_sampling_state_mutex);
+    SamplingState          state = _sampling_state;
+    state.wanted                 = _sampling_on.load(std::memory_order_relaxed);
+    return state;
+}
+
+void Consumer::add_samples(std::vector<sampling::Sample> const &samples) {
+    std::scoped_lock const lock(_added_mutex);
+    _added_samples.insert(_added_samples.end(), samples.begin(), samples.end());
+    _sampling_busy.store(true, std::memory_order_relaxed);
+}
+
+void Consumer::queue_sample(sampling::Sample const &sample) {
+    // In time order, which crediting relies on: one thread's ring is in order already, so this is
+    // an append unless a test's samples are mixed in.
+    auto               &waiting = _waiting_samples[sample.tid];
+    WaitingSample const next{.ticks = sampling::monotonic_to_ticks(sample.time_ns, _sample_anchor), .ip = sample.ip};
+    auto                at = waiting.end();
+    while (at != waiting.begin() && std::prev(at)->ticks > next.ticks) {
+        --at;
+    }
+    waiting.insert(at, next);
+    ++_samples_taken;
+}
+
+void Consumer::run_sampler(size_t registrations) {
+    auto const     sink     = [this](sampling::Sample const &sample) { queue_sample(sample); };
+    bool const     want     = _sampling_on.load(std::memory_order_relaxed);
+    uint64_t const settings = _sampling_settings.load(std::memory_order_relaxed);
+    auto const     now      = std::chrono::steady_clock::now();
+    _sample_anchor          = sampling::ClockPair::now();
+    if (!want) {
+        if (_sampler.running()) {
+            _sampler.stop(sink);
+        }
+    } else if (_sampling_tried != settings) {
+        // Asked for, or asked for at another rate: start afresh, once for these settings.
+        if (_sampler.running()) {
+            _sampler.stop(sink);
+        }
+        _sampling_tried = settings;
+        if (_sampler.start(_sampling_rate.load(std::memory_order_relaxed))) {
+            _sampling_ever           = true;
+            _last_rescan             = now;
+            _rescanned_registrations = registrations;
+        }
+    }
+    {
+        // Samples a test handed over, as if just read.
+        std::scoped_lock const added_lock(_added_mutex);
+        if (!_added_samples.empty()) {
+            std::ranges::stable_sort(_added_samples, {}, &sampling::Sample::time_ns);
+            for (auto const &sample : _added_samples) {
+                queue_sample(sample);
+            }
+            _added_samples.clear();
+            _sampling_ever = true;
+        }
+    }
+    if (want && _sampler.running()) {
+        // A thread that registers is picked up at once; one that never records, within a second.
+        if (registrations != _rescanned_registrations || now - _last_rescan >= std::chrono::seconds(1)) {
+            _sampler.rescan(sink);
+            _last_rescan             = now;
+            _rescanned_registrations = registrations;
+        }
+        _sampler.drain(sink);
+    }
+
+    std::scoped_lock const lock(_sampling_state_mutex);
+    _sampling_state = {.wanted  = want,
+                       .running = _sampler.running(),
+                       .event   = _sampler.event(),
+                       .rate_hz = _sampler.rate(),
+                       .threads = _sampler.threads(),
+                       .refused = _sampler.refused(),
+                       .samples = _samples_taken,
+                       .lost    = _sampler.lost(),
+                       .why_not = _sampler.why_not()};
+}
+
+void Consumer::credit_samples(std::deque<WaitingSample> &waiting, ThreadState *ts, uint64_t ticks) {
+    while (!waiting.empty() && waiting.front().ticks < ticks) {
+        AggNode *node = ts == nullptr || ts->stack.empty() ? nullptr : ts->stack.back().node;
+        (node != nullptr ? node->samples : _unzoned).add(waiting.front().ip);
+        waiting.pop_front();
+    }
+}
+
+void Consumer::credit_waiting_samples(uint64_t ticks) {
+    for (auto it = _waiting_samples.begin(); it != _waiting_samples.end();) {
+        ThreadState *ts = nullptr;
+        if (auto const thread = _thread_of_kernel.find(it->first); thread != _thread_of_kernel.end()) {
+            if (auto const state = _threads.find(thread->second); state != _threads.end()) {
+                ts = &state->second;
+            }
+        }
+        credit_samples(it->second, ts, ticks);
+        // Only a zone opened before sampling was switched on, whose Push is not written until it
+        // closes, keeps samples waiting past the pass: past a bound, they go where they best can.
+        while (it->second.size() > kMaxWaitingSamples) {
+            AggNode *node = ts == nullptr || ts->stack.empty() ? nullptr : ts->stack.back().node;
+            (node != nullptr ? node->samples : _unzoned).add(it->second.front().ip);
+            it->second.pop_front();
+        }
+        it = it->second.empty() ? _waiting_samples.erase(it) : std::next(it);
+    }
+    _sampling_busy.store(_sampler.running() || !_waiting_samples.empty(), std::memory_order_relaxed);
+}
+
+namespace {
+
+void write_samples_json(std::string &out, SampleCounts const &samples) {
+    out += fmt::format(R"("samples": {}, "addresses": {{)", samples.total);
+    // Largest first, so a reader that wants the top few reads the front.
+    std::vector<std::pair<uint64_t, uint64_t>> sorted(samples.by_address.begin(), samples.by_address.end());
+    std::ranges::sort(sorted, [](auto const &a, auto const &b) { return a.second != b.second ? a.second > b.second : a.first < b.first; });
+    bool first = true;
+    for (auto const &[address, count] : sorted) {
+        out += fmt::format(R"({}"0x{:x}": {})", first ? "" : ", ", address, count);
+        first = false;
+    }
+    out += "}";
+}
+
+} // namespace
+
+auto Consumer::cpu_json() const -> std::string {
+    if (!_sampling_ever) {
+        return {};
+    }
+    auto const  state = sampling_state();
+    std::string out   = fmt::format(R"({{"schema": "waggle.cpu/1", "sampling": {{"event": "{}", "rate_hz": {}, "threads": {}, )"
+                                    R"("samples": {}, "lost": {}}}, "zones": [)",
+                                    state.event, state.rate_hz, state.threads, state.samples, state.lost);
+    bool        first = true;
+    for (auto const &[thread_id, ts] : _threads) {
+        // Each zone with samples, named by its path from the thread's root; an explicit stack, as
+        // everywhere the tree is walked.
+        std::vector<std::pair<AggNode const *, std::string>> pending;
+        for (auto const &child : ts.root.children) {
+            pending.emplace_back(child.second.get(), "\"" + detail::json_escape(child.second->name) + "\"");
+        }
+        while (!pending.empty()) {
+            auto const [node, path] = pending.back();
+            pending.pop_back();
+            if (node->samples.total > 0) {
+                out += fmt::format(R"({}{{"thread": {}, "path": [{}], )", first ? "" : ", ", thread_id, path);
+                write_samples_json(out, node->samples);
+                out += "}";
+                first = false;
+            }
+            for (auto const &child : node->children) {
+                pending.emplace_back(child.second.get(), path + ", \"" + detail::json_escape(child.second->name) + "\"");
+            }
+        }
+    }
+    out += R"(], "no_zone": {)";
+    write_samples_json(out, _unzoned);
+    out += "}}";
+    return out;
+}
+
 auto Consumer::dropped_count() const -> uint64_t {
     std::scoped_lock const lock(_reg_mutex);
     uint64_t               total = 0;
@@ -264,6 +442,12 @@ void Consumer::shutdown() {
             credit_energy(thread_id, ts->second, std::numeric_limits<uint64_t>::max());
         }
     }
+    // So are samples, once the rings are read a last time.
+    if (_sampler.running()) {
+        _sample_anchor = sampling::ClockPair::now();
+        _sampler.stop([this](sampling::Sample const &sample) { queue_sample(sample); });
+    }
+    credit_waiting_samples(std::numeric_limits<uint64_t>::max());
     _trace.close();
 }
 
@@ -276,8 +460,9 @@ namespace {
 
 /// Clear what @p node has recorded, keeping where it was entered and its children.
 void clear_statistics(AggNode &node) {
-    node.energy_nj            = 0;
-    node.e_core_energy_nj     = 0;
+    node.energy_nj        = 0;
+    node.e_core_energy_nj = 0;
+    node.samples.clear();
     node.call_count           = 0;
     node.total_exclusive      = ns{0};
     node.total_exclusive_mean = 0.0;
@@ -341,6 +526,9 @@ void Consumer::reset() {
     for (auto &[id, thread] : _energy) {
         thread.pending.clear();
     }
+    // So are samples; the sampler keeps sampling.
+    _waiting_samples.clear();
+    _unzoned.clear();
     // The curve starts again; what is still allocated stays allocated.
     _memory.clear();
     _memory_next = 0;
@@ -353,6 +541,12 @@ void Consumer::reset() {
 }
 
 void Consumer::consumer_loop() {
+    {
+        // The sampling source samples the program's threads, not this one.
+        std::unique_lock const lock(_tree_mutex);
+        _consumer_tid = kernel_thread_id();
+        _sampler.exclude(static_cast<uint32_t>(_consumer_tid));
+    }
     auto last_tick = std::chrono::steady_clock::now();
     // The nap doubles, up to kMaxNap, each time a look finds nothing, and resets to kMinNap when one
     // finds events, so an idle process is not woken a thousand times a second. A ring passing half
@@ -384,25 +578,42 @@ void Consumer::consumer_loop() {
 
 size_t Consumer::drain_all() {
     // Return early if every ring is empty, so an idle process skips the snapshot and the tree lock.
-    bool const                      energy = _energy_on.load(std::memory_order_relaxed);
+    bool const energy   = _energy_on.load(std::memory_order_relaxed);
+    bool const sampling = _sampling_on.load(std::memory_order_relaxed) || _sampling_busy.load(std::memory_order_relaxed);
+    // Samples taken before this instant are credited by the pass's end: their threads' events up to
+    // it are in the rings once the samples are read. Read before the registrations, so a thread
+    // that registers after them registered after it too, and had no zone open at such a sample.
+    uint64_t const                  pass_ticks = TickClock::now();
     std::vector<ThreadRegistration> regs;
     {
         std::scoped_lock const lock(_reg_mutex);
-        // Sampling energy goes on while threads record nothing: a long zone with nothing inside it
-        // uses energy without writing an event until it closes.
-        if (!energy && std::ranges::all_of(_registrations, [](ThreadRegistration const &r) { return r.ring_buffer->empty(); })) {
+        // Sampling energy, and threads, goes on while threads record nothing: a long zone with
+        // nothing inside it uses energy and takes samples without writing an event until it closes.
+        if (!energy && !sampling &&
+            std::ranges::all_of(_registrations, [](ThreadRegistration const &r) { return r.ring_buffer->empty(); })) {
             return 0;
         }
         regs = _registrations;
     }
 
-    if (regs.empty())
+    if (regs.empty() && !sampling)
         return 0;
 
     // Drain events from all ring buffers under a single exclusive lock
     std::unique_lock const lock(_tree_mutex);
     size_t                 drained = 0;
+    // Samples are read before events, so each finds its thread's events up to it in the ring.
+    if (sampling) {
+        run_sampler(regs.size());
+    }
     for (auto &reg : regs) {
+        if (sampling && reg.kernel_thread != 0) {
+            _thread_of_kernel[reg.kernel_thread] = reg.thread_id;
+        }
+        if (!_waiting_samples.empty()) {
+            auto const waiting = _waiting_samples.find(reg.kernel_thread);
+            _draining_samples  = waiting == _waiting_samples.end() ? nullptr : &waiting->second;
+        }
         if (_trace.is_open()) {
             auto const name = _thread_names.find(reg.thread_id);
             _trace.thread(reg.thread_id, reg.kernel_thread, name != _thread_names.end() ? name->second : std::string{});
@@ -413,6 +624,10 @@ size_t Consumer::drain_all() {
             sample_energy(reg);
         }
         drained += reg.ring_buffer->drain([&](Event const &evt) { process_event(reg.thread_id, evt); });
+        _draining_samples = nullptr;
+    }
+    if (sampling) {
+        credit_waiting_samples(pass_ticks);
     }
     resolve_device_spans();
     _trace.maybe_flush();
@@ -441,9 +656,12 @@ void Consumer::process_event(uint32_t thread_id, Event const &evt) {
             ts.name = name->second;
         }
     }
-    // Energy read before this event belongs to the zone open then.
+    // Energy read, and samples taken, before this event belong to the zone open then.
     if (!_energy.empty()) {
         credit_energy(thread_id, ts, evt.ticks);
+    }
+    if (_draining_samples != nullptr) {
+        credit_samples(*_draining_samples, &ts, evt.ticks);
     }
 
     switch (evt.type) {
@@ -484,6 +702,9 @@ void Consumer::process_event(uint32_t thread_id, Event const &evt) {
         // Energy read while it was open is its own, though it was written only as it closed.
         if (!_energy.empty()) {
             credit_energy(thread_id, ts, evt.zone.end_ticks);
+        }
+        if (_draining_samples != nullptr) {
+            credit_samples(*_draining_samples, &ts, evt.zone.end_ticks);
         }
         Event pop{};
         pop.ticks = evt.zone.end_ticks;

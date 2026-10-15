@@ -567,8 +567,8 @@ void Server::send_snapshot_to(socket_t fd) {
     msg += "}}\n";
 
     // The whole allocation track for a viewer that just connected.
-    write_memory_json(msg, 0);
-    write_devices_json(msg);
+    write_memory_json(msg, _consumer, 0);
+    write_devices_json(msg, _consumer);
 
     // Append any accumulated log messages so the initial snapshot includes them
     auto logs = _log_queue.drain();
@@ -614,8 +614,8 @@ void Server::write_timeline_json(std::string &out) {
     out += "]}\n";
 }
 
-void Server::write_devices_json(std::string &out) {
-    auto const work = _consumer.device_work();
+void Server::write_devices_json(std::string &out, Consumer &consumer) {
+    auto const work = consumer.device_work();
     if (work.empty()) {
         return;
     }
@@ -630,18 +630,18 @@ void Server::write_devices_json(std::string &out) {
     out += "]}\n";
 }
 
-void Server::write_memory_json(std::string &out, uint64_t after) {
-    auto const samples = _consumer.memory_samples(after);
-    auto const live    = _consumer.live_allocations(kLiveAllocationsShown);
+void Server::write_memory_json(std::string &out, Consumer &consumer, uint64_t after) {
+    auto const samples = consumer.memory_samples(after);
+    auto const live    = consumer.live_allocations(kLiveAllocationsShown);
     // The live list changes only with a sample, so an update with none has nothing to say.
     if (samples.empty() && after != 0) {
         return;
     }
-    out += R"({"type":"memory","live_bytes":)" + std::to_string(_consumer.live_bytes());
-    out += ",\"untracked\":" + std::to_string(_consumer.untracked_allocations());
+    out += R"({"type":"memory","live_bytes":)" + std::to_string(consumer.live_bytes());
+    out += ",\"untracked\":" + std::to_string(consumer.untracked_allocations());
     // The last sample's sequence number: samples are consecutive, so a viewer that already has some
     // of them (the snapshot on connect and the next update can overlap) drops the repeats.
-    out += ",\"seq\":" + std::to_string(_consumer.memory_seq());
+    out += ",\"seq\":" + std::to_string(consumer.memory_seq());
     out += ",\"samples\":[";
     for (size_t i = 0; i < samples.size(); ++i) {
         out += fmt::format("{}[{:.3f},{}]", i > 0 ? "," : "", samples[i].t_ms, samples[i].live_bytes);
@@ -690,12 +690,12 @@ void Server::send_updates() {
     write_timeline_json(msg);
 
     // The allocation track: what is new since the last send.
-    write_memory_json(msg, _memory_sent);
+    write_memory_json(msg, _consumer, _memory_sent);
     _memory_sent = _consumer.memory_seq();
 
     // Device work: the summary, when a span or a reset changed it.
     if (_consumer.device_seq() != _devices_sent) {
-        write_devices_json(msg);
+        write_devices_json(msg, _consumer);
         _devices_sent = _consumer.device_seq();
     }
 
@@ -912,11 +912,16 @@ void Server::unregister_mdns() {
 
 void Server::export_session(std::string const &path, std::string const &label,
                             std::vector<std::pair<std::string, std::string>> const &extra_json) {
-    // Flush all pending events from ring buffers into the AggNode tree.
-    _consumer.flush();
+    write_session(_consumer, _handlers, path, label, extra_json, _seq);
+}
 
-    auto        lock       = _consumer.lock_shared();
-    auto const &thread_map = _consumer.thread_data();
+void Server::write_session(Consumer &consumer, RequestHandlers const &handlers, std::string const &path, std::string const &label,
+                           std::vector<std::pair<std::string, std::string>> const &extra_json, uint64_t seq) {
+    // Flush all pending events from ring buffers into the AggNode tree.
+    consumer.flush();
+
+    auto        lock       = consumer.lock_shared();
+    auto const &thread_map = consumer.thread_data();
 
     // Build a single JSON object in the viewer's session format:
     // { "label": "...", "type": "snapshot", "meta": {...}, "seq": N, "dropped": N, "threads": {...} }
@@ -940,13 +945,13 @@ void Server::export_session(std::string const &path, std::string const &label,
     json += R"(    "executable": ")" + escape_json_str(executable_name()) + "\",\n";
     json += R"(    "start_time": ")" + escape_json_str(s_start_time) + "\",\n";
     json += R"(    "executable_path": ")" + escape_json_str(executable_path()) + "\",\n";
-    json += "    \"clients\": " + clients_json(_handlers.clients()) + ",\n";
+    json += "    \"clients\": " + clients_json(handlers.clients()) + ",\n";
     json += "    \"counters\": " + counters_json() + "\n";
     json += "  },\n";
 
     // Snapshot fields
-    json += "  \"seq\": " + std::to_string(_seq) + ",\n";
-    json += "  \"dropped\": " + std::to_string(_consumer.dropped_count()) + ",\n";
+    json += "  \"seq\": " + std::to_string(seq) + ",\n";
+    json += "  \"dropped\": " + std::to_string(consumer.dropped_count()) + ",\n";
 
     // Threads
     json += "  \"threads\": {";
@@ -976,9 +981,9 @@ void Server::export_session(std::string const &path, std::string const &label,
     // What libraries registered for session files, each under its own key.
     {
         std::string memory;
-        write_memory_json(memory, 0);
+        write_memory_json(memory, consumer, 0);
         std::string devices;
-        write_devices_json(devices);
+        write_devices_json(devices, consumer);
         if (!devices.empty()) {
             devices.pop_back(); // its line break
             json += ",\n  \"devices\": " + devices;
@@ -990,8 +995,13 @@ void Server::export_session(std::string const &path, std::string const &label,
     }
     json += ",\n  \"extensions\": {";
     bool first_section = true;
-    for (auto const &[key, value] : _handlers.session_sections()) {
+    for (auto const &[key, value] : handlers.session_sections()) {
         json += std::string(first_section ? "" : ",") + "\n    \"" + escape_json_str(key) + "\": " + value;
+        first_section = false;
+    }
+    // The collector's own: the sampling source's samples, by zone and address.
+    if (auto const cpu = consumer.cpu_json(); !cpu.empty()) {
+        json += std::string(first_section ? "" : ",") + "\n    \"cpu\": " + cpu;
         first_section = false;
     }
     json += first_section ? "}" : "\n  }";

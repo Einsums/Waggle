@@ -36,7 +36,7 @@ auto source_requested(Settings const &settings, std::string_view name) -> bool {
 }
 
 auto source_statuses() -> std::vector<SourceStatus> {
-    return {counters::status(), energy::status(), ompt::status(), signposts::status()};
+    return {counters::status(), energy::status(), ompt::status(), sampling::status(), signposts::status()};
 }
 
 namespace {
@@ -112,5 +112,31 @@ auto status() -> SourceStatus {
     return status;
 }
 } // namespace energy
+
+namespace sampling {
+auto status() -> SourceStatus {
+    SourceStatus status{.name = "sampling", .state = "off", .detail = ""};
+    if (collector_inactive() || Profiler::gone() || !source_requested(Profiler::instance().settings(), "sampling")) {
+        return status;
+    }
+    auto const state = Profiler::instance().consumer()->sampling_state();
+    if (state.running) {
+        status.state  = "active";
+        status.detail = fmt::format("Linux perf_event: {} sampled at {} Hz on {} thread(s); {} samples, {} lost to full rings",
+                                    state.event == "cycles" ? "hardware cycles" : "the software CPU clock (no hardware counters)",
+                                    state.rate_hz, state.threads, state.samples, state.lost);
+        if (state.refused > 0) {
+            status.detail += fmt::format("; {} thread(s) could not be sampled: {}", state.refused, state.why_not);
+        }
+    } else if (!state.why_not.empty()) {
+        status.state  = "unavailable";
+        status.detail = state.why_not;
+    } else {
+        status.state  = "waiting";
+        status.detail = "the consumer opens the sampling events on its next pass";
+    }
+    return status;
+}
+} // namespace sampling
 
 WAGGLE_NAMESPACE_END
