@@ -165,7 +165,10 @@ def parse_gnu_output(text: str) -> dict[int, tuple[Frame, ...]]:
         where = where.split(" (discriminator", 1)[0]
         file, _, number = where.rpartition(":")
         name = "" if function == "??" else short_name(function)
-        frames.append(Frame(name, "" if file in ("", "??") else file, int(number) if number.isdigit() else 0))
+        # A file with no line ("lib.cpp:?", from a library built without line information) is no
+        # line information either.
+        line_number = int(number) if number.isdigit() else 0
+        frames.append(Frame(name, file if line_number and file not in ("", "??") else "", line_number))
         i += 2
     if current is not None:
         out[current] = tuple(frames)

@@ -121,6 +121,9 @@ CATCH2_INTERNAL_TEST_0()
 0x0000000000004f20
 ??
 ??:0
+0x0000000000004f28
+library_kernel
+SamplingLibrary.cpp:?
 """
 
 
@@ -131,6 +134,7 @@ def test_addr2line_output_gives_each_address_its_frames_innermost_first():
         Frame("CATCH2_INTERNAL_TEST_0", "/src/tests/unit/Sampling.cpp", 100),
     )
     assert frames[0x4F20] == (Frame("", "", 0),)
+    assert frames[0x4F28] == (Frame("library_kernel", "", 0),)
 
 
 def test_hot_lines_name_the_innermost_line_and_what_it_was_inlined_into():
@@ -195,3 +199,15 @@ def test_the_viewer_names_a_loaded_sessions_hot_lines(tmp_path):
             await pilot.press("q")
 
     asyncio.run(main())
+
+
+def test_caller_lines_credit_a_librarys_samples_to_the_lines_that_called_it():
+    called_a = Location(0x100, "/bin/prog", 0x100, (Frame("solve", "/src/s.cpp", 40),))
+    called_b = Location(0x200, "/bin/prog", 0x200, (Frame("solve", "/src/s.cpp", 41),))
+    kernel = Location(0x900, "/lib/libblas.so", 0x900, (Frame("dgemm_kernel", "", 0),))
+    result = Result(locations={0x100: called_a, 0x200: called_b, 0x900: kernel})
+    rows = cpu.caller_lines(Counter({(0x100, 0x900): 75, (0x200, 0x900): 25}), 200, result)
+    assert [(r["line"], r["callee"], r["samples"], r["samples_pct"]) for r in rows] == [
+        (40, "dgemm_kernel", 75, 37.5),
+        (41, "dgemm_kernel", 25, 12.5),
+    ]

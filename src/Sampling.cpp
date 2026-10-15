@@ -21,6 +21,7 @@
 #if defined(__linux__)
 #    include <ctime>
 #    include <dirent.h>
+#    include <fcntl.h>
 #    include <link.h>
 #    include <linux/perf_event.h>
 #    include <sys/mman.h>
@@ -58,6 +59,20 @@ auto ClockPair::now() -> ClockPair {
         }
     }
     return best;
+}
+
+auto CodeIndex::caller_of(Sample const &sample) -> Caller {
+    if (sample.chain_size < 2 || has_lines(sample.chain[0])) {
+        return {};
+    }
+    for (uint32_t i = 1; i < sample.chain_size; ++i) {
+        if (has_lines(sample.chain[i])) {
+            // Return addresses point past their call, often at the next line's code: one less is
+            // inside the call. The leaf is the sample's own address, already inside its instruction.
+            return {.caller = sample.chain[i] - 1, .callee = i == 1 ? sample.chain[0] : sample.chain[i - 1] - 1};
+        }
+    }
+    return {};
 }
 
 auto monotonic_to_ticks(uint64_t ns, ClockPair const &anchor) -> uint64_t {
@@ -108,6 +123,22 @@ auto parse_record(void const *bytes, std::size_t size, Sample &sample, uint64_t 
         SampleRecord record{};
         std::memcpy(&record, bytes, sizeof(record));
         sample = {.time_ns = record.time, .ip = record.ip, .tid = record.tid};
+        // With PERF_SAMPLE_CALLCHAIN, the frame count and the frames follow. The kernel marks where
+        // each context's frames begin (PERF_CONTEXT_USER, ...) with values in the top 4095.
+        if (size >= sizeof(SampleRecord) + sizeof(uint64_t)) {
+            auto const *at = static_cast<unsigned char const *>(bytes) + sizeof(SampleRecord);
+            uint64_t    nr = 0;
+            std::memcpy(&nr, at, sizeof(nr));
+            nr                               = std::min<uint64_t>(nr, (size - sizeof(SampleRecord) - sizeof(nr)) / sizeof(uint64_t));
+            constexpr uint64_t kFirstContext = ~uint64_t{4095} + 1; // PERF_CONTEXT_MAX, -4095
+            for (uint64_t i = 0; i < nr && sample.chain_size < kMaxChain; ++i) {
+                uint64_t frame = 0;
+                std::memcpy(&frame, at + sizeof(nr) + i * sizeof(frame), sizeof(frame));
+                if (frame < kFirstContext) {
+                    sample.chain[sample.chain_size++] = frame;
+                }
+            }
+        }
         return Record::Sample;
     }
     case kRecordLost: {
@@ -191,7 +222,71 @@ auto add_module(dl_phdr_info *info, std::size_t /*size*/, void *data) -> int {
     return 0;
 }
 
+/// Whether the ELF file at @p path has a .debug_line section: whether it was built with line
+/// information. Read with pread, the section headers and their names only.
+auto file_has_lines(std::string const &path) -> bool {
+    int const fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        return false;
+    }
+    bool found = false;
+    ElfW(Ehdr) ehdr{};
+    if (pread(fd, &ehdr, sizeof(ehdr), 0) == sizeof(ehdr) && std::memcmp(ehdr.e_ident, ELFMAG, SELFMAG) == 0 &&
+        ehdr.e_shentsize == sizeof(ElfW(Shdr)) && ehdr.e_shstrndx < ehdr.e_shnum) {
+        std::vector<ElfW(Shdr)> sections(ehdr.e_shnum);
+        auto const              bytes = static_cast<ssize_t>(sections.size() * sizeof(ElfW(Shdr)));
+        if (pread(fd, sections.data(), static_cast<size_t>(bytes), static_cast<off_t>(ehdr.e_shoff)) == bytes) {
+            ElfW(Shdr) const &names = sections[ehdr.e_shstrndx];
+            std::string       text(names.sh_size, '\0');
+            if (pread(fd, text.data(), text.size(), static_cast<off_t>(names.sh_offset)) == static_cast<ssize_t>(text.size())) {
+                for (auto const &section : sections) {
+                    if (section.sh_name < text.size() && std::strcmp(text.c_str() + section.sh_name, ".debug_line") == 0) {
+                        found = section.sh_size > 0;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    close(fd);
+    return found;
+}
+
 } // namespace
+
+void CodeIndex::list_modules() {
+    std::vector<Module> modules;
+    dl_iterate_phdr(&add_module, &modules);
+    _ranges.clear();
+    for (auto const &module : modules) {
+        auto [entry, added] = _lines_of_file.try_emplace(module.path, false);
+        if (added) {
+            entry->second = module.path.starts_with('/') && file_has_lines(module.path);
+        }
+        for (auto const &[start, end] : module.ranges) {
+            _ranges.push_back({.start = start, .end = end, .lines = entry->second});
+        }
+    }
+    std::ranges::sort(_ranges, {}, &Range::start);
+    _listed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+auto CodeIndex::has_lines(uint64_t address) -> bool {
+    auto const find = [&] {
+        auto it = std::ranges::upper_bound(_ranges, address, {}, &Range::start);
+        return it == _ranges.begin() || address >= std::prev(it)->end ? nullptr : &*std::prev(it);
+    };
+    Range const *range = find();
+    if (range == nullptr) {
+        // A library loaded since the modules were listed: list them again, at most once a second.
+        auto const now = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        if (_listed_ns == 0 || now - _listed_ns >= 1'000'000'000) {
+            list_modules();
+            range = find();
+        }
+    }
+    return range != nullptr && range->lines;
+}
 
 auto module_map_json() -> std::string {
     std::vector<Module> modules;
@@ -277,15 +372,16 @@ Sampler::Sampler() = default;
 
 Sampler::~Sampler() = default;
 
-auto Sampler::start(uint64_t rate_hz) -> bool {
+auto Sampler::start(uint64_t rate_hz, bool callchain) -> bool {
     _rings.clear();
     _refused.clear();
     _refused_count = 0;
     _lost          = 0;
     _why_not.clear();
-    _hardware = true;
-    _rate     = rate_hz;
-    _running  = false;
+    _hardware  = true;
+    _rate      = rate_hz;
+    _callchain = callchain;
+    _running   = false;
     if (rate_hz == 0) {
         _why_not = "sampling_rate must be at least 1";
         return false;
@@ -321,8 +417,9 @@ auto Sampler::open_thread(uint32_t tid) -> bool {
     attr.config                   = _hardware ? uint64_t{PERF_COUNT_HW_CPU_CYCLES} : uint64_t{PERF_COUNT_SW_CPU_CLOCK};
     attr.freq                     = 1;
     attr.sample_freq              = _rate;
-    attr.sample_type              = PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_TIME;
-    attr.exclude_kernel           = 1; // user space only, which kernel.perf_event_paranoid 2 allows
+    attr.sample_type              = PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_TIME | (_callchain ? PERF_SAMPLE_CALLCHAIN : 0);
+    attr.sample_max_stack         = _callchain ? kMaxChain : 0; // user frames, from frame pointers
+    attr.exclude_kernel           = 1;                          // user space only, which kernel.perf_event_paranoid 2 allows
     attr.exclude_hv               = 1;
     attr.exclude_callchain_kernel = 1;
     attr.use_clockid              = 1; // the clock zones are on, so every sample finds its zone
@@ -429,6 +526,13 @@ auto Sampler::event() const -> std::string {
 
 #else
 
+auto CodeIndex::has_lines(uint64_t /*address*/) -> bool {
+    return false;
+}
+
+void CodeIndex::list_modules() {
+}
+
 auto module_map_json() -> std::string {
     return "[]";
 }
@@ -439,9 +543,10 @@ Sampler::Sampler() = default;
 
 Sampler::~Sampler() = default;
 
-auto Sampler::start(uint64_t rate_hz) -> bool {
-    _rate    = rate_hz;
-    _why_not = "sampling uses Linux perf_event, which this platform does not have";
+auto Sampler::start(uint64_t rate_hz, bool callchain) -> bool {
+    _rate      = rate_hz;
+    _callchain = callchain;
+    _why_not   = "sampling uses Linux perf_event, which this platform does not have";
     return false;
 }
 

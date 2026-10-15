@@ -211,9 +211,10 @@ void Consumer::credit_energy(uint32_t thread_id, ThreadState &ts, uint64_t ticks
     }
 }
 
-void Consumer::set_sampling(bool on, uint64_t rate_hz) {
-    bool const was = _sampling_on.exchange(on, std::memory_order_relaxed);
-    if (_sampling_rate.exchange(rate_hz, std::memory_order_relaxed) != rate_hz || was != on) {
+void Consumer::set_sampling(bool on, uint64_t rate_hz, bool callchain) {
+    bool const was        = _sampling_on.exchange(on, std::memory_order_relaxed);
+    bool const was_chains = _sampling_callchain.exchange(callchain, std::memory_order_relaxed);
+    if (_sampling_rate.exchange(rate_hz, std::memory_order_relaxed) != rate_hz || was != on || was_chains != callchain) {
         _sampling_settings.fetch_add(1, std::memory_order_relaxed);
     }
     if (on) {
@@ -238,8 +239,9 @@ void Consumer::queue_sample(sampling::Sample const &sample) {
     // In time order, which crediting relies on: one thread's ring is in order already, so this is
     // an append unless a test's samples are mixed in.
     auto               &waiting = _waiting_samples[sample.tid];
-    WaitingSample const next{.ticks = sampling::monotonic_to_ticks(sample.time_ns, _sample_anchor), .ip = sample.ip};
-    auto                at = waiting.end();
+    WaitingSample const next{
+        .ticks = sampling::monotonic_to_ticks(sample.time_ns, _sample_anchor), .ip = sample.ip, .caller = _code.caller_of(sample)};
+    auto at = waiting.end();
     while (at != waiting.begin() && std::prev(at)->ticks > next.ticks) {
         --at;
     }
@@ -263,7 +265,7 @@ void Consumer::run_sampler(size_t registrations) {
             _sampler.stop(sink);
         }
         _sampling_tried = settings;
-        if (_sampler.start(_sampling_rate.load(std::memory_order_relaxed))) {
+        if (_sampler.start(_sampling_rate.load(std::memory_order_relaxed), _sampling_callchain.load(std::memory_order_relaxed))) {
             _sampling_ever           = true;
             _last_rescan             = now;
             _rescanned_registrations = registrations;
@@ -292,21 +294,22 @@ void Consumer::run_sampler(size_t registrations) {
     }
 
     std::scoped_lock const lock(_sampling_state_mutex);
-    _sampling_state = {.wanted  = want,
-                       .running = _sampler.running(),
-                       .event   = _sampler.event(),
-                       .rate_hz = _sampler.rate(),
-                       .threads = _sampler.threads(),
-                       .refused = _sampler.refused(),
-                       .samples = _samples_taken,
-                       .lost    = _sampler.lost(),
-                       .why_not = _sampler.why_not()};
+    _sampling_state = {.wanted    = want,
+                       .running   = _sampler.running(),
+                       .event     = _sampler.event(),
+                       .rate_hz   = _sampler.rate(),
+                       .callchain = _sampler.callchain(),
+                       .threads   = _sampler.threads(),
+                       .refused   = _sampler.refused(),
+                       .samples   = _samples_taken,
+                       .lost      = _sampler.lost(),
+                       .why_not   = _sampler.why_not()};
 }
 
 void Consumer::credit_samples(std::deque<WaitingSample> &waiting, ThreadState *ts, uint64_t ticks) {
     while (!waiting.empty() && waiting.front().ticks < ticks) {
         AggNode *node = ts == nullptr || ts->stack.empty() ? nullptr : ts->stack.back().node;
-        (node != nullptr ? node->samples : _unzoned).add(waiting.front().ip);
+        (node != nullptr ? node->samples : _unzoned).add(waiting.front().ip, waiting.front().caller);
         waiting.pop_front();
     }
 }
@@ -324,7 +327,7 @@ void Consumer::credit_waiting_samples(uint64_t ticks) {
         // closes, keeps samples waiting past the pass: past a bound, they go where they best can.
         while (it->second.size() > kMaxWaitingSamples) {
             AggNode *node = ts == nullptr || ts->stack.empty() ? nullptr : ts->stack.back().node;
-            (node != nullptr ? node->samples : _unzoned).add(it->second.front().ip);
+            (node != nullptr ? node->samples : _unzoned).add(it->second.front().ip, it->second.front().caller);
             it->second.pop_front();
         }
         it = it->second.empty() ? _waiting_samples.erase(it) : std::next(it);
@@ -345,6 +348,16 @@ void write_samples_json(std::string &out, SampleCounts const &samples) {
         first = false;
     }
     out += "}";
+    if (!samples.by_caller.empty()) {
+        std::vector<std::pair<std::pair<uint64_t, uint64_t>, uint64_t>> callers(samples.by_caller.begin(), samples.by_caller.end());
+        std::ranges::stable_sort(callers, [](auto const &a, auto const &b) { return a.second > b.second; });
+        out += R"(, "callers": [)";
+        for (size_t i = 0; i < callers.size(); ++i) {
+            auto const &[pair, count] = callers[i];
+            out += fmt::format(R"({}["0x{:x}", "0x{:x}", {}])", i > 0 ? ", " : "", pair.first, pair.second, count);
+        }
+        out += "]";
+    }
 }
 
 } // namespace
@@ -354,10 +367,11 @@ auto Consumer::cpu_json() const -> std::string {
         return {};
     }
     auto const  state = sampling_state();
-    std::string out   = fmt::format(R"({{"schema": "waggle.cpu/1", "sampling": {{"event": "{}", "rate_hz": {}, "threads": {}, )"
-                                    R"("samples": {}, "lost": {}}}, "modules": {}, "zones": [)",
-                                    state.event, state.rate_hz, state.threads, state.samples, state.lost, sampling::module_map_json());
-    bool        first = true;
+    std::string out =
+        fmt::format(R"({{"schema": "waggle.cpu/1", "sampling": {{"event": "{}", "rate_hz": {}, "callchain": {}, "threads": {}, )"
+                    R"("samples": {}, "lost": {}}}, "modules": {}, "zones": [)",
+                    state.event, state.rate_hz, state.callchain, state.threads, state.samples, state.lost, sampling::module_map_json());
+    bool first = true;
     for (auto const &[thread_id, ts] : _threads) {
         // Each zone with samples, named by its path from the thread's root; an explicit stack, as
         // everywhere the tree is walked.

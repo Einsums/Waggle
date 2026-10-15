@@ -7,6 +7,7 @@
 
 #include <Waggle/Config.hpp>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -20,11 +21,54 @@ WAGGLE_NAMESPACE_BEGIN
 
 namespace sampling {
 
+/// Frames of a call chain kept per sample.
+inline constexpr std::size_t kMaxChain = 32;
+
 /// Where one thread was when the kernel interrupted it, and when.
 struct Sample {
     uint64_t time_ns; ///< CLOCK_MONOTONIC, the clock steady_clock reads on Linux
     uint64_t ip;      ///< the user-space instruction address
     uint32_t tid;     ///< the kernel's id for the thread
+    /// The user-space call chain, from frame pointers, innermost first: the sample's own address,
+    /// then each caller's return address. Empty when call chains are off.
+    uint32_t                        chain_size{0};
+    std::array<uint64_t, kMaxChain> chain{};
+};
+
+/// Where a sample in code without line information was called from: the innermost frame of its
+/// chain in code with line information, and the frame just inside that call, both as addresses
+/// within their instructions (a return address less one). Zeros when the sample's own code has
+/// line information, or no frame of its chain does.
+struct Caller {
+    uint64_t caller{0};
+    uint64_t callee{0};
+};
+
+/**
+ * @brief Which loaded code has line information, by module, to credit a library's samples to the
+ * line that called it.
+ *
+ * A module has line information when its file has a .debug_line section; each file is read once.
+ * The process's modules are listed again when an address falls in none of them (a library loaded
+ * since), at most once a second. Not thread-safe: the consumer drives it.
+ */
+class WAGGLE_EXPORT CodeIndex {
+  public:
+    /// The caller of @p sample, as @ref Caller says.
+    auto caller_of(Sample const &sample) -> Caller;
+    /// Whether @p address is in a module whose file has line information.
+    auto has_lines(uint64_t address) -> bool;
+
+  private:
+    struct Range {
+        uint64_t start;
+        uint64_t end;
+        bool     lines;
+    };
+    std::vector<Range>                    _ranges; ///< by start
+    std::unordered_map<std::string, bool> _lines_of_file;
+    int64_t                               _listed_ns{0}; ///< when the modules were last listed
+    void                                  list_modules();
 };
 
 /// What one perf ring record held.
@@ -35,9 +79,9 @@ enum class Record : std::uint8_t {
     Malformed, ///< too short for its type
 };
 
-/// Read one record from a ring the sampler opened (samples of IP, TID and TIME): @p bytes is the
-/// whole record, its perf_event_header first, @p size its length. Exported for tests, which feed it
-/// fixture bytes.
+/// Read one record from a ring the sampler opened (samples of IP, TID and TIME, and CALLCHAIN when
+/// call chains are on, which the record's length shows): @p bytes is the whole record, its
+/// perf_event_header first, @p size its length. Exported for tests, which feed it fixture bytes.
 WAGGLE_EXPORT auto parse_record(void const *bytes, std::size_t size, Sample &sample, uint64_t &lost) -> Record;
 
 /// The two clocks read together: a tick count and the CLOCK_MONOTONIC instant beside it.
@@ -82,9 +126,9 @@ class WAGGLE_EXPORT Sampler {
     Sampler &operator=(Sampler const &) = delete;
 
     /// Sample every thread of the process at @p rate_hz, hardware cycles where the machine has a
-    /// PMU and the software CPU clock where it has none. False when no thread could be sampled;
-    /// @ref why_not then says why.
-    auto start(uint64_t rate_hz) -> bool;
+    /// PMU and the software CPU clock where it has none, with each sample's user-space call chain
+    /// when @p callchain. False when no thread could be sampled; @ref why_not then says why.
+    auto start(uint64_t rate_hz, bool callchain = true) -> bool;
 
     /// Read what the rings still hold into @p sink, then close every event.
     void stop(Sink const &sink);
@@ -103,6 +147,7 @@ class WAGGLE_EXPORT Sampler {
     /// The event sampled: "cycles", or "cpu-clock" on a machine without hardware counters.
     [[nodiscard]] auto event() const -> std::string;
     [[nodiscard]] auto rate() const -> uint64_t { return _rate; }
+    [[nodiscard]] auto callchain() const -> bool { return _callchain; }
     /// Threads sampled now.
     [[nodiscard]] auto threads() const -> std::size_t { return _rings.size(); }
     /// Threads whose event could not be opened, since start.
@@ -121,6 +166,7 @@ class WAGGLE_EXPORT Sampler {
 
     bool                                                _running{false};
     bool                                                _hardware{true};
+    bool                                                _callchain{true};
     uint64_t                                            _rate{0};
     std::unordered_map<uint32_t, std::unique_ptr<Ring>> _rings;
     std::unordered_set<uint32_t>                        _refused; ///< threads not to try again

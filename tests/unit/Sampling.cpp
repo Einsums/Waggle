@@ -107,6 +107,22 @@ TEST_CASE("Sampling - a sample record gives its address, thread and time", "[sam
     CHECK(lost == 0);
 }
 
+TEST_CASE("Sampling - a call chain gives the user frames, innermost first, without the kernel's markers", "[sampling]") {
+    constexpr uint64_t kContextUser = ~uint64_t{512} + 1; // PERF_CONTEXT_USER, -512
+    auto const bytes = record(9, {0x401234, (uint64_t{4321} << 32) | 1234, 5'000'000'000, 4, kContextUser, 0x401234, 0x402000, 0x403000});
+    sampling::Sample sample{};
+    uint64_t         lost = 0;
+    REQUIRE(sampling::parse_record(bytes.data(), bytes.size(), sample, lost) == sampling::Record::Sample);
+    REQUIRE(sample.chain_size == 3);
+    CHECK(sample.chain[0] == 0x401234);
+    CHECK(sample.chain[1] == 0x402000);
+    CHECK(sample.chain[2] == 0x403000);
+    // A count past the record's end is cut to what it holds.
+    auto const short_chain = record(9, {0x401234, 0, 1, 100, 0x401234});
+    REQUIRE(sampling::parse_record(short_chain.data(), short_chain.size(), sample, lost) == sampling::Record::Sample);
+    CHECK(sample.chain_size == 1);
+}
+
 TEST_CASE("Sampling - lost records add up, and other or short records are passed over", "[sampling]") {
     sampling::Sample sample{};
     uint64_t         lost   = 0;
@@ -335,6 +351,22 @@ TEST_CASE("Sampling - a program with one hot line", "[.hot_line]") {
         prof.push("hot_line", "test.cpp", 30, "test");
         g_sink += hot_loop(9'000'000);
         g_sink += cool_loop(1'000'000);
+        prof.pop();
+    }
+}
+
+extern "C" auto waggle_test_library_work(uint64_t n) -> uint64_t; // tests/unit/SamplingLibrary.cpp
+
+// Run by tests/sampling_session.py: a zone that calls a library without line information from two
+// lines, with three times the work from the first, for `waggle cpu --lines` to credit the library's
+// samples to the two lines about 3 to 1.
+TEST_CASE("Sampling - a program calling a library from two lines", "[.caller_lines]") {
+    auto      &prof = Profiler::instance();
+    auto const end  = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (std::chrono::steady_clock::now() < end) {
+        prof.push("caller_lines", "test.cpp", 40, "test");
+        g_sink += waggle_test_library_work(3'000'000); // WAGGLE_TEST_CALLER_A
+        g_sink += waggle_test_library_work(1'000'000); // WAGGLE_TEST_CALLER_B
         prof.pop();
     }
 }

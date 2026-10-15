@@ -73,6 +73,10 @@ Every setting by name (as ``waggle_config_set``, ``waggle.configure`` and ``wagg
       - ``WAGGLE_SAMPLING_RATE``
       - ``997``
       - Samples per second per thread, for the ``sampling`` source; at most ``kernel.perf_event_max_sample_rate``.
+    * - ``sampling_callchain``
+      - ``WAGGLE_SAMPLING_CALLCHAIN``
+      - ``true``
+      - Record each sample's call chain, so time in code without line information is credited to the line that called it; ``false`` keeps only where each sample was.
 
 Booleans accept ``1``, ``true``, ``on``, ``yes`` and ``0``, ``false``, ``off``, ``no``.
 

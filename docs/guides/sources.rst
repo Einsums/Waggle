@@ -138,6 +138,13 @@ Build with line information (``-g``, or CMake's ``RelWithDebInfo``) for lines; w
 A line inside inlined code is the innermost one, where the time went, and also names the function and line it was inlined into.
 Each file is checked to be the one that ran, by its build id, or by its size and time when it was linked without one: a rebuilt file is reported, not read, as its lines would be wrong.
 Code with no file, the kernel's vDSO (``clock_gettime``), is named by its module alone.
+
+Time in code without line information, a BLAS library or the vDSO, says little by itself: "38% in ``mkl_blas_avx512_dgemm_kernel``".
+So each sample also records its call chain, and a sample in such code is credited to its *caller line*: the innermost frame of the chain in code with line information, which is the line of yours that called into the library.
+``waggle cpu`` lists caller lines after a zone's hot lines, each with the function it called.
+Call chains come from frame pointers: build your code with ``-fno-omit-frame-pointer`` (the default on Fedora and Ubuntu), and the line that called a library is found however the library was built.
+A library built without them can make the chain skip a frame inside it, so the function named as called may be one the library called in turn; the line that called is still yours.
+``sampling_callchain=false`` keeps only where each sample was.
 The source reports ``unavailable`` on macOS and Windows, and where the kernel or a container's seccomp profile refuses ``perf_event_open``, saying what to change.
 
 signposts

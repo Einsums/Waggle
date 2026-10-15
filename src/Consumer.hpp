@@ -44,14 +44,21 @@ using EventRingBuffer = RingBuffer<Event, kRingBufferCapacity>;
 struct SampleCounts {
     uint64_t                               total{0};
     std::unordered_map<uint64_t, uint64_t> by_address;
+    /// Samples in code without line information, by the line that called into it: (caller, callee)
+    /// as sampling::Caller gives them.
+    std::map<std::pair<uint64_t, uint64_t>, uint64_t> by_caller;
 
-    void add(uint64_t ip) {
+    void add(uint64_t ip, sampling::Caller const &caller = {}) {
         ++total;
         ++by_address[ip];
+        if (caller.caller != 0) {
+            ++by_caller[{caller.caller, caller.callee}];
+        }
     }
     void clear() {
         total = 0;
         by_address.clear();
+        by_caller.clear();
     }
 };
 
@@ -247,7 +254,7 @@ class WAGGLE_EXPORT Consumer {
     /// Sample every thread of the process at @p rate_hz, crediting each sample to the zone open on
     /// its thread when it was taken (the sampling source); off when @p on is false. Safe while the
     /// consumer runs: its next pass opens or closes the events.
-    void set_sampling(bool on, uint64_t rate_hz);
+    void set_sampling(bool on, uint64_t rate_hz, bool callchain = true);
 
     /// What the sampling source is doing, for its status. Safe from any thread.
     struct SamplingState {
@@ -255,6 +262,7 @@ class WAGGLE_EXPORT Consumer {
         bool        running{false};
         std::string event;
         uint64_t    rate_hz{0};
+        bool        callchain{false};
         uint64_t    threads{0};
         uint64_t    refused{0};
         uint64_t    samples{0};
@@ -458,12 +466,15 @@ class WAGGLE_EXPORT Consumer {
     /// the zone open at its time needs nothing later. Samples wait by kernel thread id; those taken
     /// after the pass began wait for the next. Under _tree_mutex, except the switches and the state.
     struct WaitingSample {
-        uint64_t ticks;
-        uint64_t ip;
+        uint64_t         ticks;
+        uint64_t         ip;
+        sampling::Caller caller;
     };
     sampling::Sampler                                       _sampler;
     std::atomic<bool>                                       _sampling_on{false};
     std::atomic<uint64_t>                                   _sampling_rate{997};
+    std::atomic<bool>                                       _sampling_callchain{true};
+    sampling::CodeIndex                                     _code;                 ///< which code has line information
     std::atomic<bool>                                       _sampling_busy{false}; ///< running, or samples waiting
     std::atomic<uint64_t>                                   _sampling_settings{0}; ///< bumped as they change
     uint64_t                                                _sampling_tried{0};    ///< the settings last started with

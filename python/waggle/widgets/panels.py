@@ -60,6 +60,7 @@ def node_details(
     history: str = "",
     bookmarked: bool = False,
     hot_lines: list[dict] | None = None,
+    caller_lines: list[dict] | None = None,
 ) -> str:
     """The detail panel's markup for *node*; *pct* is its share of the thread's exclusive time.
     *hot_lines* are the zone's, every thread's together, from ``waggle.cpu.summary``."""
@@ -107,6 +108,11 @@ def node_details(
         for hot in hot_lines:
             where = f"{Path(hot['file']).name}:{hot['line']}" if hot.get("file") else "(no line information)"
             lines.append(f"    {hot['samples_pct']:5.1f}%  {escape(where)}  {escape(hot['function'])}")
+    if caller_lines:
+        lines.append("  [bold]Calls into code without lines[/bold] (by the calling line):")
+        for call in caller_lines[:3]:
+            where = f"{Path(call['file']).name}:{call['line']}" if call.get("file") else "(no line information)"
+            lines.append(f"    {call['samples_pct']:5.1f}%  {escape(where)}  calls {escape(call['callee'])}")
     if node.annotations:
         lines.append("  [bold]Annotations:[/bold]")
         lines += [f"    {escape(k)} = {_annotation_text(v)}" for k, v in node.annotations.items()]

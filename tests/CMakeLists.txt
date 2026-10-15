@@ -98,8 +98,15 @@ set_tests_properties(${WAGGLE_TEST_PREFIX}Energy PROPERTIES ENVIRONMENT "WAGGLE_
 # The sampling source: the record parser and the merge by time with samples the test makes, then,
 # asked for in the environment, against the kernel; where perf_event cannot sample it says why and
 # skips (Catch2's exit code 4).
+# A library without line information, which the test calls from two lines to check that its time is
+# credited to them; both keep frame pointers, from which the kernel takes call chains.
+add_library(waggle_sampling_library SHARED unit/SamplingLibrary.cpp)
 add_executable(waggle_Sampling_test unit/Sampling.cpp)
-target_link_libraries(waggle_Sampling_test PRIVATE Waggle::internal Catch2::Catch2WithMain)
+if(NOT MSVC)
+  target_compile_options(waggle_sampling_library PRIVATE -g0 -fno-omit-frame-pointer)
+  target_compile_options(waggle_Sampling_test PRIVATE -fno-omit-frame-pointer)
+endif()
+target_link_libraries(waggle_Sampling_test PRIVATE Waggle::internal Catch2::Catch2WithMain waggle_sampling_library)
 add_dependencies(waggle_tests waggle_Sampling_test)
 add_test(NAME ${WAGGLE_TEST_PREFIX}Sampling COMMAND waggle_Sampling_test "~[source]")
 set_tests_properties(${WAGGLE_TEST_PREFIX}Sampling PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false" TIMEOUT 300)

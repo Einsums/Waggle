@@ -84,6 +84,20 @@ def _by_zone(ext: dict[str, Any]) -> dict[str, Counter[int]]:
     return zones
 
 
+def _callers_by_zone(ext: dict[str, Any]) -> dict[str, Counter[tuple[int, int]]]:
+    """Each zone's samples in code without line information, by (caller, callee) address."""
+    zones: dict[str, Counter[tuple[int, int]]] = {}
+    for zone in ext.get("zones", []):
+        counts = zones.setdefault(zone["path"][-1], Counter())
+        for caller, callee, n in zone.get("callers", []):
+            counts[(int(caller, 16), int(callee, 16))] += int(n)
+    return zones
+
+
+def _caller_addresses(callers: Counter[tuple[int, int]]) -> set[int]:
+    return {a for pair in callers for a in pair}
+
+
 def _symbols(ext: dict[str, Any], addresses: set[int], wanted: bool) -> Result:
     if not wanted:
         return Result(locations={a: Location(a) for a in addresses})
@@ -123,6 +137,20 @@ def hot_lines(counts: Counter[int], result: Result, top: int = 0) -> list[dict[s
     return rows[:top] if top else rows
 
 
+def caller_lines(callers: Counter[tuple[int, int]], total: int, result: Result, top: int = 0) -> list[dict[str, Any]]:
+    """Samples in code without line information (a library, the vDSO), by the line that called
+    into it and the function it called, as a share of the zone's @p total samples, most first."""
+    lines: Counter[tuple[str, int, str, str]] = Counter()
+    for (caller, callee), n in callers.items():
+        file, line, function = _line_key(result.locations.get(caller, Location(caller)))
+        lines[(file, line, function, result.locations.get(callee, Location(callee)).function)] += n
+    rows = [
+        {"file": file or None, "line": line or None, "function": function, "callee": callee, "samples": n, "samples_pct": _pct(n, total)}
+        for (file, line, function, callee), n in sorted(lines.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    return rows[:top] if top else rows
+
+
 def hot_functions(counts: Counter[int], result: Result, top: int = 0) -> list[dict[str, Any]]:
     """Samples by the innermost function, for a first look."""
     total = sum(counts.values())
@@ -140,9 +168,11 @@ def summary(session: Session, *, symbols: bool = True) -> dict[str, Any]:
     """The summary of @p session's samples: every zone with samples, most first, with its hot lines."""
     ext = _extension(session)
     zones = _by_zone(ext)
+    callers = _callers_by_zone(ext)
     no_zone = zones.pop(NO_ZONE)
     total = sum(sum(c.values()) for c in zones.values()) + sum(no_zone.values())
-    result = _symbols(ext, {a for c in zones.values() for a in c}, symbols)
+    addresses = {a for c in zones.values() for a in c} | {a for c in callers.values() for a in _caller_addresses(c)}
+    result = _symbols(ext, addresses, symbols)
 
     profile = {}
     if session.snapshot is not None:
@@ -162,6 +192,8 @@ def summary(session: Session, *, symbols: bool = True) -> dict[str, Any]:
         zone["low_confidence"] = samples < LOW_CONFIDENCE_SAMPLES
         if symbols:
             zone["hot_lines"] = hot_lines(counts, result, SUMMARY_TOP)
+            if callers.get(name):
+                zone["caller_lines"] = caller_lines(callers[name], samples, result, SUMMARY_TOP)
             zone["hot_functions"] = hot_functions(counts, result, SUMMARY_TOP)
         rows.append(zone)
     data: dict[str, Any] = {
@@ -213,7 +245,8 @@ def zone_addresses(session: Session, name: str, *, symbols: bool = True) -> dict
 def zone_lines(session: Session, name: str) -> dict[str, Any]:
     """Every source line and function with samples in zone @p name."""
     ext, counts = _zone_counts(session, name)
-    result = _symbols(ext, set(counts), True)
+    callers = _callers_by_zone(ext).get(name, Counter())
+    result = _symbols(ext, set(counts) | _caller_addresses(callers), True)
     samples = sum(counts.values())
     return {
         "schema": SCHEMA,
@@ -221,6 +254,7 @@ def zone_lines(session: Session, name: str) -> dict[str, Any]:
         "samples": samples,
         "low_confidence": samples < LOW_CONFIDENCE_SAMPLES,
         "hot_lines": hot_lines(counts, result),
+        "caller_lines": caller_lines(callers, samples, result),
         "hot_functions": hot_functions(counts, result),
         "symbols": _symbols_note(result),
     }
@@ -327,6 +361,8 @@ def _text_summary(data: dict[str, Any], top: int) -> str:
         )
         for hot in z.get("hot_lines", [])[:3]:
             lines.append(f"{'':>44}{hot['samples_pct']:>5.1f}%  {_location(hot)}  {hot['function']}")
+        for call in z.get("caller_lines", [])[:2]:
+            lines.append(f"{'':>44}{call['samples_pct']:>5.1f}%  {_location(call)}  calls {call['callee']}")
     nz = data["no_zone"]
     lines.append(f"{nz['samples_pct']:>9.1f}  {nz['samples']:>8}  {'':>10}  {'':>8}  {NO_ZONE}")
     if any(z["low_confidence"] for z in zones):
@@ -348,6 +384,12 @@ def _text_lines(data: dict[str, Any], top: int) -> str:
         lines.append(f"{r['samples_pct']:>9.1f}  {r['samples']:>8}  {_location(r)}  {r['function']}")
         if into := r.get("inlined_into"):
             lines.append(f"{'':>21}inlined into {into['function']}" + (f" at {_shown(into['file'])}:{into['line']}" if into.get("file") else ""))
+    calls = data.get("caller_lines", [])
+    if calls:
+        lines += ["", "Time in code without line information, by the line that called it:", "",
+                  f"{'samples %':>9}  {'samples':>8}  line"]  # fmt: skip
+        for r in calls[:top] if top else calls:
+            lines.append(f"{r['samples_pct']:>9.1f}  {r['samples']:>8}  {_location(r)}  {r['function']}  calls {r['callee']}")
     functions = data["hot_functions"][:top] if top else data["hot_functions"]
     lines += ["", f"{'samples %':>9}  {'samples':>8}  function"]
     lines += [f"{r['samples_pct']:>9.1f}  {r['samples']:>8}  {r['function']}" for r in functions]

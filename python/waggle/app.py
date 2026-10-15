@@ -191,8 +191,9 @@ class ProfilerApp(App):
         self._name_filter = ""
         self._event = "Starting"
         self._disasm_target: tuple[str, str] | None = None
-        #: Each loaded session's hot lines by zone name, once symbolized; sessions being symbolized.
-        self._hot_lines: dict[str, dict[str, list[dict]]] = {}
+        #: Each loaded session's zones from ``waggle.cpu.summary`` by name, once symbolized; sessions
+        #: being symbolized.
+        self._hot_lines: dict[str, dict[str, dict]] = {}
         self._symbolizing: set[str] = set()
         #: The source and collector problems already shown, per session.
         self._warned: dict[str, set[str]] = {}
@@ -415,10 +416,16 @@ class ProfilerApp(App):
         if "cpu" in session.extensions and not known:
             self._symbolizing.add(session.session_id)
             self._symbolize(session)
-        hot = self._hot_lines.get(session.session_id, {}).get(node.name)
+        sampled = self._hot_lines.get(session.session_id, {}).get(node.name, {})
         detail.show(
             node_details(
-                node, share, baseline=session.baseline, history=history, bookmarked=node.name in session.bookmarks, hot_lines=hot
+                node,
+                share,
+                baseline=session.baseline,
+                history=history,
+                bookmarked=node.name in session.bookmarks,
+                hot_lines=sampled.get("hot_lines"),
+                caller_lines=sampled.get("caller_lines"),
             )
         )
         if self._visible("source"):
@@ -441,7 +448,7 @@ class ProfilerApp(App):
 
         try:
             data = await asyncio.to_thread(summary, session)
-            self._hot_lines[session.session_id] = {z["name"]: z.get("hot_lines", []) for z in data["zones"]}
+            self._hot_lines[session.session_id] = {z["name"]: z for z in data["zones"]}
         except (SystemExit, OSError) as error:
             self._hot_lines[session.session_id] = {}
             self._say(f"Samples not named: {error}")

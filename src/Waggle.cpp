@@ -180,6 +180,10 @@ Profiler::Profiler() : _consumer(std::make_unique<Consumer>(_strings, _sites)) {
     (void)get_counter_backend().slot_name(0);
     (void)StringTable::unknown_string();
     (void)TickClock::instance();
+    // The session file names the executable, and the sampling source's consumer reads its path
+    // while the program runs: built later, these would be gone before an exit that saves.
+    (void)executable_path();
+    (void)executable_name();
 
     Settings s;
     {
@@ -210,7 +214,7 @@ void Profiler::apply(Settings const &s) {
         for (auto const &channel : _channels) {
             channel->push_now.store(sampling, std::memory_order_relaxed);
         }
-        _consumer->set_sampling(sampling, static_cast<uint64_t>(std::max<std::int64_t>(s.sampling_rate, 0)));
+        _consumer->set_sampling(sampling, static_cast<uint64_t>(std::max<std::int64_t>(s.sampling_rate, 0)), s.sampling_callchain);
     }
     _consumer->set_max_distinct_children(s.max_distinct_children);
     // "{pid}" keeps the processes of one run, MPI ranks say, from writing one file.

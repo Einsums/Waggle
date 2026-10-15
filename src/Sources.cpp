@@ -122,9 +122,9 @@ auto status() -> SourceStatus {
     auto const state = Profiler::instance().consumer()->sampling_state();
     if (state.running) {
         status.state  = "active";
-        status.detail = fmt::format("Linux perf_event: {} sampled at {} Hz on {} thread(s); {} samples, {} lost to full rings",
+        status.detail = fmt::format("Linux perf_event: {} sampled at {} Hz{} on {} thread(s); {} samples, {} lost to full rings",
                                     state.event == "cycles" ? "hardware cycles" : "the software CPU clock (no hardware counters)",
-                                    state.rate_hz, state.threads, state.samples, state.lost);
+                                    state.rate_hz, state.callchain ? " with call chains" : "", state.threads, state.samples, state.lost);
         if (state.refused > 0) {
             status.detail += fmt::format("; {} thread(s) could not be sampled: {}", state.refused, state.why_not);
         }

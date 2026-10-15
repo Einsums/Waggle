@@ -70,6 +70,18 @@ def check_hot_line(program: str, tmp: Path) -> None:
     print(f"sampling: line {hot} has {top['samples_pct']}% of hot_line's samples")
 
 
+def check_caller_lines(program: str, tmp: Path) -> None:
+    saved = tmp / "callers.json"
+    check(record(program, "[.caller_lines]", saved) is not None, "the caller_lines run saved no samples")
+    first, second = marked_line("WAGGLE_TEST_CALLER_A"), marked_line("WAGGLE_TEST_CALLER_B")
+    calls = waggle_cpu(str(saved), "--zone", "caller_lines", "--lines")["caller_lines"]
+    by_line = {c["line"]: c["samples"] for c in calls if c["file"] and Path(c["file"]).resolve() == SOURCE}
+    a, b = by_line.get(first, 0), by_line.get(second, 0)
+    check(a + b >= 400, f"only {a + b} of the library's samples were credited to lines {first} and {second}: {calls[:4]}")
+    check(0.68 < a / (a + b) < 0.82, f"line {first} has {a / (a + b):.3f} of the library's samples, not about 0.75")
+    print(f"sampling: lines {first} and {second} called the library for {a} and {b} samples")
+
+
 def main() -> None:
     program = sys.argv[1]
     with tempfile.TemporaryDirectory() as tmp:
@@ -88,6 +100,7 @@ def main() -> None:
         check(0.68 < a / (a + b) < 0.82, f"saved_a has {a / (a + b):.3f} of the samples, not about 0.75")
         check(zones["saved_a"]["calls"] > 0, "the summary joins the profile's calls")
         check_hot_line(program, Path(tmp))
+        check_caller_lines(program, Path(tmp))
     print(f"sampling: {summary['sampling']['samples']} samples as expected")
 
 if __name__ == "__main__":
