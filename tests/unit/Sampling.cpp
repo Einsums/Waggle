@@ -126,14 +126,16 @@ TEST_CASE("Sampling - lost records add up, and other or short records are passed
 
 TEST_CASE("Sampling - a sample's time becomes the ticks zones are stamped with", "[sampling]") {
     // Against a pair of reads taken a millisecond earlier, as the consumer takes one each pass: the
-    // second pair's instant converts to its own tick count to within a couple of microseconds.
+    // second pair's instant converts to its own tick count to within a few microseconds. Each pair
+    // is as sure as the gap between its two reads, which a loaded machine stretches past one; what
+    // matters is staying far inside the millisecond between samples.
     auto const &clock  = TickClock::instance();
     auto const  anchor = sampling::ClockPair::now();
     spin_for(std::chrono::milliseconds(1));
     auto const later = sampling::ClockPair::now();
     auto const back  = sampling::monotonic_to_ticks(later.ns, anchor);
     auto const error = back > later.ticks ? back - later.ticks : later.ticks - back;
-    CHECK(static_cast<double>(error) * clock.ns_per_tick < 2000.0);
+    CHECK(static_cast<double>(error) * clock.ns_per_tick < 10'000.0);
 }
 
 TEST_CASE("Sampling - each sample goes to the zone open on its thread when it was taken", "[sampling]") {

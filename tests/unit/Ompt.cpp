@@ -14,6 +14,7 @@
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
+#include <map>
 #include <omp.h>
 #include <optional>
 #include <string>
@@ -176,21 +177,47 @@ TEST_CASE("A source requested after the runtime started says so", "[ompt][missed
 // libomp reports a worker's implicit task end only when the worker wakes for the next region, so a
 // share closed there took in the idle time between the two regions.
 TEST_CASE("A thread's share of a region ends with the region, not when the next one starts", "[ompt][active]") {
+    // A share can be no longer than its region, and the regions are timed: a fixed bound failed on a
+    // loaded machine, where the regions alone ran past it. A share that took in the gap is longer
+    // than both regions by the gap, so half the gap above them separates the two. Each worker's
+    // shares are read before and after, as earlier cases' regions, the first of which starts the
+    // runtime's threads, add to the same zones.
+    auto const shares_now = [] {
+        std::map<std::string, std::pair<uint64_t, int64_t>> out; // worker -> shares, inclusive ns
+        auto const snapshot = waggle::Snapshot::take();          // held: its threads live only as long as it does
+        for (auto const &thread : snapshot.threads()) {
+            if (auto const share = child(thread.root, std::string("omp work: ") + kRegionFunction)) {
+                out[thread.name] = {share->stats().call_count, share->stats().inclusive_ns};
+            }
+        }
+        return out;
+    };
+    constexpr auto gap     = std::chrono::milliseconds(100);
+    auto           regions = std::chrono::steady_clock::duration::zero();
+    auto const     timed   = [&regions] {
+        auto const start = std::chrono::steady_clock::now();
+        ompt_test_region();
+        regions += std::chrono::steady_clock::now() - start;
+    };
+    auto const before = shares_now();
     {
         waggle::ScopedZone const outer("ompt: two regions");
-        ompt_test_region();
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        ompt_test_region();
+        timed();
+        std::this_thread::sleep_for(gap);
+        timed();
     }
-    auto const snapshot = waggle::Snapshot::take();
-    int        shares   = 0;
-    for (auto const &thread : snapshot.threads()) {
-        if (auto const share = child(thread.root, std::string("omp work: ") + kRegionFunction)) {
-            auto const stats = share->stats();
-            INFO(thread.name << ": " << stats.call_count << " shares, " << stats.inclusive_ns / 1e6 << " ms");
-            CHECK(stats.inclusive_ns < 50'000'000); // far below the 100 ms between the regions
-            ++shares;
-        }
+    auto const after      = shares_now();
+    auto const regions_ms = std::chrono::duration<double, std::milli>(regions).count();
+    auto const bound_ns   = std::chrono::duration_cast<std::chrono::nanoseconds>(regions + gap / 2).count();
+    int        workers    = 0;
+    for (auto const &[name, now] : after) {
+        auto const was    = before.contains(name) ? before.at(name) : std::pair<uint64_t, int64_t>{0, 0};
+        auto const shares = now.first - was.first;
+        auto const ns     = now.second - was.second;
+        INFO(name << ": " << shares << " shares, " << ns / 1e6 << " ms, against regions of " << regions_ms << " ms");
+        CHECK(shares == 2);
+        CHECK(ns < bound_ns);
+        ++workers;
     }
-    CHECK(shares == kThreads - 1);
+    CHECK(workers == kThreads - 1);
 }
