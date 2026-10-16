@@ -31,7 +31,9 @@ def add_parser(sub) -> None:
     )
     cal.add_argument("--threads", type=int, help="use at most N cores, for a quick check; the result says it is partial")
     cal.add_argument("--seconds", type=float, help="seconds per FLOP measurement (default: 1)")
-    cal.add_argument("--stream-mb", type=int, help="megabytes per triad array (default: from the last-level cache)")
+    cal.add_argument(
+        "--stream-mb", type=int, help="megabytes per triad array (default: four times the last-level cache; 256 with --threads)"
+    )
     cal.add_argument("--file", help="the machine file to write (default: WAGGLE_MACHINE_FILE, else ~/.cache/waggle/machine.json)")
     cal.add_argument("--print", action="store_true", help="print the measurement as JSON and keep nothing")
     cal.set_defaults(action=run)

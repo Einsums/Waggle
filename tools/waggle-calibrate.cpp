@@ -340,9 +340,14 @@ auto main(int argc, char **argv) -> int {
     auto const [fp64, isa] = measure_flops(use, true, options.seconds);
     auto const fp32        = measure_flops(use, false, options.seconds).first;
 
-    long const          llc      = llc_bytes();
-    long const          array_mb = options.stream_mb > 0 ? options.stream_mb : std::max<long>(64, 4 * llc / 3 / (1024 * 1024));
-    long const          elements = array_mb * 1024 * 1024 / 8;
+    long const llc = llc_bytes();
+    // STREAM's rule: each array at least four times the last-level cache, so no pass finds the last
+    // one's data still cached. Arrays of 4/3 of it read 681 GB/s a socket on Granite Rapids where
+    // 4 GB arrays read 595. A run limited by --threads is a check, often on a node that limits
+    // memory, so its arrays are kept small unless asked for.
+    long const          default_mb = options.threads > 0 ? 256 : std::max<long>(64, 4 * llc / (1024 * 1024));
+    long const          array_mb   = options.stream_mb > 0 ? options.stream_mb : default_mb;
+    long const          elements   = array_mb * 1024 * 1024 / 8;
     std::vector<double> per_socket;
     for (auto const &[socket, list] : by_socket) {
         std::vector<Cpu> mine;
