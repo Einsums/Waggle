@@ -272,14 +272,11 @@ void PerfCounterBackend::read(ThreadCounters const &tc, std::array<uint64_t, kNu
             counts[tc.group_start[g] + static_cast<int>(i)] = static_cast<double>(reading.values[i]) * scale;
         }
     }
-    std::vector<Slot> slots;
-    {
-        std::scoped_lock const lock(_mutex);
-        slots = _slots;
-    }
-    for (size_t s = 0; s < slots.size() && s < static_cast<size_t>(kNumCounterSlots); ++s) {
+    // The slots are fixed once any thread has opened (reconfigure refuses then), and this thread
+    // has: read without the lock or a copy, which every zone would pay for twice.
+    for (size_t s = 0; s < _slots.size() && s < static_cast<size_t>(kNumCounterSlots); ++s) {
         double sum = 0.0;
-        for (auto const &[event, weight] : slots[s].terms) {
+        for (auto const &[event, weight] : _slots[s].terms) {
             if (event >= 0 && event < tc.count) {
                 sum += counts[event] * static_cast<double>(weight);
             }

@@ -27,6 +27,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <thread>
@@ -513,4 +514,30 @@ TEST_CASE("Bench ZoneCost: zones while the rings overflow", "[Profile][ZoneCost]
         show(fmt::format("zone, rings overflowing, {} thread(s)", threads), Result{.min_ns = ns.front(), .median_ns = ns[ns.size() / 2]});
         fmt::println("[ZoneCost]   {:.1f}% of events dropped", 100.0 * static_cast<double>(dropped) / (5.0 * 2.0 * kZones * threads));
     }
+}
+
+// What the sampling source costs a program that is busy: the same arithmetic timed with and without
+// WAGGLE_SOURCES=sampling, run as two processes. The kernel's interrupts, about a thousand a
+// second, are the cost; the thread does nothing for them.
+TEST_CASE("Bench ZoneCost: a busy loop", "[Profile][ZoneCost][benchmark]") {
+    constexpr int kBlocks = 30;
+    // About 10 ms of dependent multiply-adds a block.
+    auto const block = [] {
+        std::uint64_t x = 1;
+        for (int i = 0; i < 4'000'000; ++i) {
+            x = x * 6364136223846793005ULL + static_cast<std::uint64_t>(i);
+        }
+        keep(static_cast<int>(x));
+    };
+    block(); // warm up
+    std::vector<double> ms;
+    for (int b = 0; b < kBlocks; ++b) {
+        auto const t0 = std::chrono::steady_clock::now();
+        block();
+        ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    }
+    std::ranges::sort(ms);
+    char const *sources = std::getenv("WAGGLE_SOURCES"); // NOLINT(concurrency-mt-unsafe)
+    fmt::println("[ZoneCost busy loop, sources: {:<10s}] min {:7.3f} ms   median {:7.3f} ms", sources && *sources ? sources : "none", ms.front(),
+                 ms[ms.size() / 2]);
 }
