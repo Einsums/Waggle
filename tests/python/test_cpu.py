@@ -317,8 +317,10 @@ def test_calibrate_measures_this_machine_on_a_few_cores(tmp_path):
     peak = entry["peak"]
     assert entry["threads"] == min(2, entry["cpus"]) and entry["complete"] == (entry["cpus"] <= 2)
     assert peak["fp64_gflops_per_core"] > 0.5
-    # Twice the lanes: about 2, which a loaded machine moves; a wrong width would give 1 or 4.
-    assert 1.2 < peak["fp32_gflops"] / peak["fp64_gflops"] < 4.0
+    # Twice the lanes at a vector width: about 2, which a loaded machine moves; a wrong width would
+    # give 1 or 4. The portable loop (Apple Silicon, say) is whatever the compiler made of it.
+    if entry["isa"] != "portable":
+        assert 1.2 < peak["fp32_gflops"] / peak["fp64_gflops"] < 4.0
     assert peak["dram_gbs"] > 0.1 and len(peak["dram_gbs_per_socket"]) >= 1
     # Two threads are one per socket on a two-socket machine: each reads memory its own socket
     # holds, so the two agree. Arrays zeroed on the main thread once put it all on one socket,

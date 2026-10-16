@@ -85,20 +85,26 @@ void spin_for(std::chrono::milliseconds length) {
     g_sink += x;
 }
 
-/// A block no thread has touched yet: a mapping of its own, its pages made by the first write to
-/// each. Not from malloc, which can hand back memory already touched: once a large block it mapped
-/// is freed, it raises its threshold for mapping and serves the next from its heap.
+/// A block no thread has touched yet: on Linux a mapping of its own, its pages made by the first
+/// write to each. Not from malloc, which can hand back memory already touched: once a large block
+/// it mapped is freed, it raises its threshold for mapping and serves the next from its heap.
+/// Elsewhere the source has one node and the cases that place pages skip, so new[] is enough.
 struct UntouchedBlock {
     char   *data;
     int64_t bytes;
+#if defined(__linux__)
     explicit UntouchedBlock(int64_t size)
         : data(static_cast<char *>(mmap(nullptr, static_cast<size_t>(size), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0))),
           bytes(size) {
         REQUIRE(data != MAP_FAILED);
     }
-    UntouchedBlock(UntouchedBlock const &)            = delete;
-    UntouchedBlock &operator=(UntouchedBlock const &) = delete;
     ~UntouchedBlock() { munmap(data, static_cast<size_t>(bytes)); }
+#else
+    explicit UntouchedBlock(int64_t size) : data(new char[static_cast<size_t>(size)]), bytes(size) {}
+    ~UntouchedBlock() { delete[] data; }
+#endif
+    UntouchedBlock(UntouchedBlock const &)               = delete;
+    UntouchedBlock    &operator=(UntouchedBlock const &) = delete;
     [[nodiscard]] auto get() const -> char * { return data; }
 };
 

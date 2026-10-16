@@ -6,6 +6,7 @@
 #include "Numa.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <cstdlib>
 #include <fstream>

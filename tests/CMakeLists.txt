@@ -120,6 +120,8 @@ set_tests_properties(${WAGGLE_TEST_PREFIX}Energy PROPERTIES ENVIRONMENT "WAGGLE_
 # A library without line information, which the test calls from two lines to check that its time is
 # credited to them; both keep frame pointers, from which the kernel takes call chains.
 add_library(waggle_sampling_library SHARED unit/SamplingLibrary.cpp)
+# MSVC exports nothing from a DLL unless told, and then makes no import library to link to.
+set_target_properties(waggle_sampling_library PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 add_executable(waggle_Sampling_test unit/Sampling.cpp)
 if(NOT MSVC)
   target_compile_options(waggle_sampling_library PRIVATE -g0 -fno-omit-frame-pointer)

@@ -12,6 +12,7 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <limits>
 #include <string>
 #include <unordered_set>
