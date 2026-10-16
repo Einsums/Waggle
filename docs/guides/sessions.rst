@@ -53,6 +53,10 @@ Open one in the viewer with ``waggle --load run.json``, or use the command line:
 
 ``--fail-above PCT`` turns a comparison into a check: it exits 1 when any zone's exclusive time grew by more than ``PCT`` percent, ignoring zones under ``--min-ms``, so a CI job that saves a session per commit fails when something slows down.
 
+When both sessions were recorded with a CPU source (``sampling``, ``roofline`` or ``numa``), the text output adds a CPU section: each zone's share of the samples, FLOP rate and share of peak, bandwidth, byte efficiency, redundant FLOPs and gap to ideal, before and after.
+Each change is set against the zone's own run-to-run noise, twice the standard error of its mean time per call (for a share of samples, of the samples), and one larger is marked ``*``: a change inside the noise is not a change.
+``--cpu`` gives that section alone, in any ``--format``.
+
 Recording a live stream
 =======================
 

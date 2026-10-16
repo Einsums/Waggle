@@ -352,3 +352,70 @@ def test_numa_findings_fire_at_their_thresholds():
     assert serial["nodes_pct"] == {"0": 100.0} and serial["threads_off_node_pct"] == 75.0
     assert "allocated 64 MB, 100% on node 0" in next(f["text"] for f in report["findings"] if f["kind"] == "first_touch")
     assert cpu.numa_report({}) is None
+
+
+def test_findings_fire_at_their_thresholds_and_name_their_numbers():
+    from waggle.findings import zone_findings
+
+    zone = {
+        "low_confidence": False,
+        "hot_lines": [{"file": "/src/Contract.cpp", "line": 212, "function": "pack_b", "samples": 410, "samples_pct": 41.0}],
+        "caller_lines": [{"file": "/src/Contract.cpp", "line": 240, "function": "solve", "callee": "dgemm", "samples_pct": 52.0}],
+        "compute": {"peak_pct": 12.0, "redundant_flops": 1.5},
+        "memory": {"byte_efficiency": 0.16},
+        "bound": "compute",
+        "gap_to_ideal": 4.5,
+    }
+    found = zone_findings(zone)
+    assert found[0] == "41% of samples in pack_b at Contract.cpp:212: the line to look at first."
+    assert "52% of samples in dgemm, called from Contract.cpp:240" in found[1]
+    assert any("Compute bound yet at 12% of a core's peak" in f for f in found)
+    assert any("Moves 6.2x the DRAM bytes" in f for f in found)
+    assert any("Does 1.50x the FLOPs" in f for f in found)
+    assert any("Takes 4.5x its ideal time (compute bound)" in f for f in found)
+
+    calm = {"low_confidence": False, "hot_lines": [{"file": "/a.cpp", "line": 1, "function": "f", "samples_pct": 29.0}],
+            "compute": {"peak_pct": 60.0, "redundant_flops": 1.1}, "memory": {"byte_efficiency": 0.9}, "bound": "compute",
+            "gap_to_ideal": 1.5}  # fmt: skip
+    assert zone_findings(calm) == []
+    # Too few samples to say which line is hot.
+    assert zone_findings({**zone, "low_confidence": True})[0].startswith("Compute bound")
+
+
+def _timed(name: str, calls: int, mean_ms: float, stddev_ms: float, flops: int) -> dict:
+    zone = _counted(name, calls * mean_ms, flops, flops // 10)
+    zone.update(call_count=calls, stddev_ms=stddev_ms)
+    return zone
+
+
+def _counted_session(label: str, children: list) -> dict:
+    return {"format": "waggle-session", "version": 1, "label": label, "threads": {"1": {"name": "main", "children": children}},
+            "extensions": {"cpu": {"schema": "waggle.cpu/1", "machine": {"host": "x", "cpu": "Unseen CPU", "sockets": 1, "cpus": 4}}}}  # fmt: skip
+
+
+def test_the_cpu_diff_marks_changes_beyond_each_zones_noise(tmp_path, monkeypatch):
+    # "steady" ran 100 calls of 10 ms, 0.1 ms apart, and went 20% faster: far past its noise.
+    # "noisy" ran 4 calls of 10 ms, 3 ms apart, and went 2% faster: inside its noise.
+    a = _counted_session("before", [_timed("steady", 100, 10.0, 0.1, 10**10), _timed("noisy", 4, 10.0, 3.0, 10**9)])
+    b = _counted_session("after", [_timed("steady", 100, 10.0 / 1.2, 0.1, 10**10), _timed("noisy", 4, 10.0 / 1.02, 3.0, 10**9)])
+    rows = cpu.cpu_diff(session_from_dict(a, "a"), session_from_dict(b, "b"), machine_file=str(tmp_path / "none.json"))
+    gflops = {r["name"]: r for r in rows if r["metric"] == "gflops"}
+    assert gflops["steady"]["change_pct"] == 20.0 and gflops["steady"]["significant"]
+    assert gflops["noisy"]["change_pct"] == 2.0 and not gflops["noisy"]["significant"]
+
+    for name, data in (("a.json", a), ("b.json", b)):
+        (tmp_path / name).write_text(json.dumps(data))
+    files = [str(tmp_path / "a.json"), str(tmp_path / "b.json")]
+    monkeypatch.setenv("WAGGLE_MACHINE_FILE", str(tmp_path / "none.json"))
+    assert main(["diff", *files, "--cpu", "--format", "json"]) == 0
+
+
+def test_diff_text_adds_the_cpu_section_after_the_times(tmp_path, capsys):
+    a = _counted_session("before", [_timed("steady", 100, 10.0, 0.1, 10**10)])
+    b = _counted_session("after", [_timed("steady", 100, 10.0 / 1.2, 0.1, 10**10)])
+    for name, data in (("a.json", a), ("b.json", b)):
+        (tmp_path / name).write_text(json.dumps(data))
+    assert main(["diff", str(tmp_path / "a.json"), str(tmp_path / "b.json")]) == 0
+    text = capsys.readouterr().out
+    assert text.index("delta_ms") < text.index("CPU, zone by zone")
+    assert "+20.0%*" in text

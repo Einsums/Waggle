@@ -49,6 +49,12 @@ def add_parsers(sub) -> None:
         help="exit 1 if any zone's exclusive time grew by more than PCT percent (zones under --min-ms ignored)",
     )
     diff.add_argument("--min-ms", type=float, default=1.0, help="ignore zones below this in A for --fail-above (default: 1)")
+    diff.add_argument(
+        "--cpu",
+        action="store_true",
+        help="only the CPU section: each zone's samples, FLOP rate, bandwidth and efficiencies before and after "
+        "(text output adds it after the times whenever both sessions have CPU data)",
+    )
     diff.set_defaults(action=diff_sessions)
 
     from . import calibrate, cpu
@@ -152,6 +158,23 @@ def diff_sessions(args: argparse.Namespace) -> int:
         if len(sessions) < 2 and not args.sessions:
             raise SystemExit(f"{args.files[0]} holds one session; give a second file")
         a, b = (_pick(sessions, w) for w in (args.sessions or ("0", "-1")))
+    from .cpu import _text_diff, cpu_diff
+
+    def cpu_rows() -> list[dict] | None:
+        try:
+            return [r for r in cpu_diff(a, b) if name_matches(r["name"], args.filter)]
+        except SystemExit:  # a session without CPU data
+            return None
+
+    if args.cpu:
+        found = cpu_rows()
+        if found is None:
+            raise SystemExit("--cpu needs CPU data in both sessions: record them with WAGGLE_SOURCES=sampling, roofline or numa")
+        if args.format == "text":
+            print(_text_diff(found))
+        else:
+            _emit(found, ["change_pct", "noise_pct", "significant", "a", "b", "metric", "name"], args.format)
+        return 0
     rows = [
         {"name": r.name, "a_ms": r.exclusive_a, "b_ms": r.exclusive_b, "delta_ms": r.delta_ms,
          "delta_pct": r.delta_pct if r.exclusive_a > 0 else None, "a_calls": r.calls_a, "b_calls": r.calls_b}
@@ -160,6 +183,9 @@ def diff_sessions(args: argparse.Namespace) -> int:
     ]  # fmt: skip
     shown = rows[: args.top] if args.top else rows
     _emit(shown, ["delta_ms", "delta_pct", "a_ms", "b_ms", "a_calls", "b_calls", "name"], args.format, f"A: {a.label}\nB: {b.label}")
+    if args.format == "text" and (found := cpu_rows()):
+        print()
+        print(_text_diff(found))
     if args.fail_above is not None:
         grew = [r for r in rows if r["a_ms"] >= args.min_ms and r["delta_pct"] is not None and r["delta_pct"] > args.fail_above]
         if grew:

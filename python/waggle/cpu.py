@@ -23,6 +23,7 @@ from collections import Counter
 from typing import Any
 
 from . import elf, machine
+from .findings import zone_findings
 from .analysis import aggregate_flat, numeric_annotation
 from .session import Session
 from .symbolize import Location, Result, symbolize
@@ -377,8 +378,10 @@ def summary(session: Session, *, symbols: bool = True, machine_file: str | None 
             if mine:
                 zone["numa"] = [{"block_gb": round(b["bytes"] / 2**30, 3), "nodes_pct": b["nodes_pct"],
                                  "threads_off_node_pct": b["threads_off_node_pct"], "huge_pct": b["huge_pct"]} for b in mine]  # fmt: skip
-            if found := [f["text"] for f in numa["findings"] if f["zone"] == name]:
-                zone["findings"] = found
+        # The zone's own findings, then its blocks' placement ones.
+        placement = [f["text"] for f in (numa or {}).get("findings", []) if f["zone"] == name]
+        if found := zone_findings(zone) + placement:
+            zone["findings"] = found
         rows.append(zone)
     data: dict[str, Any] = {"schema": SCHEMA, "machine": machine_block, "sampling": ext["sampling"] if ext else None, "zones": rows}
     if ext is not None:
@@ -388,6 +391,68 @@ def summary(session: Session, *, symbols: bool = True, machine_file: str | None 
     if numa is not None:
         data["numa"] = {"nodes": numa["nodes"], "findings": [f["text"] for f in numa["findings"]]}
     return data
+
+
+# ---- Before and after ----------------------------------------------------------------------------
+
+
+def _noise_pct(node_a: Any, node_b: Any) -> float | None:
+    """Twice the relative standard error of the difference of two zones' mean time per call, in
+    percent: a rate that changed by less moved within the zone's own run-to-run spread."""
+    parts = []
+    for node in (node_a, node_b):
+        if node is None or not node.call_count or node.exclusive_ms <= 0:
+            return None
+        mean = node.exclusive_ms / node.call_count
+        parts.append((node.stddev_ms / mean) ** 2 / node.call_count)
+    return round(200.0 * sum(parts) ** 0.5, 1)
+
+
+def cpu_diff(a: Session, b: Session, machine_file: str | None = None) -> list[dict[str, Any]]:
+    """Each zone's CPU numbers in session @p a and in @p b, matched by name, with how much each
+    changed and whether by more than the zone's own noise."""
+    sa, sb = summary(a, symbols=False, machine_file=machine_file), summary(b, symbols=False, machine_file=machine_file)
+    flat_a, flat_b = (
+        {n.name: n for n in aggregate_flat([c for t in s.snapshot.threads.values() for c in t.children])} if s.snapshot else {}
+        for s in (a, b)
+    )
+    zones_a, zones_b = {z["name"]: z for z in sa["zones"]}, {z["name"]: z for z in sb["zones"]}
+    metrics = (("samples_pct", lambda z: z.get("samples_pct")),
+               ("gflops", lambda z: (z.get("compute") or {}).get("gflops")),
+               ("peak_pct", lambda z: (z.get("compute") or {}).get("peak_pct")),
+               ("gbs", lambda z: (z.get("memory") or {}).get("gbs")),
+               ("byte_efficiency", lambda z: (z.get("memory") or {}).get("byte_efficiency")),
+               ("redundant_flops", lambda z: (z.get("compute") or {}).get("redundant_flops")),
+               ("gap_to_ideal", lambda z: z.get("gap_to_ideal")))  # fmt: skip
+    rows = []
+    for name in [n for n in zones_a if n in zones_b]:
+        za, zb = zones_a[name], zones_b[name]
+        noise = _noise_pct(flat_a.get(name), flat_b.get(name))
+        for metric, get in metrics:
+            va, vb = get(za), get(zb)
+            if va is None or vb is None:
+                continue
+            change = round(100.0 * (vb - va) / va, 1) if va else None
+            row = {"name": name, "metric": metric, "a": va, "b": vb, "change_pct": change}
+            if metric == "samples_pct":
+                # A share of samples is binomial: its noise is the samples', not the calls'.
+                spread = sum((v / 100) * (1 - v / 100) / max(n, 1) for v, n in ((va, za["samples"]), (vb, zb["samples"])))
+                row["noise_pct"] = round(200.0 * spread**0.5 / (va / 100), 1) if va else None
+            else:
+                row["noise_pct"] = noise
+            row["significant"] = change is not None and row["noise_pct"] is not None and abs(change) > row["noise_pct"]
+            rows.append(row)
+    return rows
+
+
+def _text_diff(rows: list[dict[str, Any]]) -> str:
+    lines = ["CPU, zone by zone (* a change larger than the zone's run-to-run noise):", "",
+             f"{'change':>8}  {'noise':>7}  {'A':>10}  {'B':>10}  {'metric':<16} zone"]  # fmt: skip
+    for r in rows:
+        change = "" if r["change_pct"] is None else f"{r['change_pct']:+.1f}%"
+        noise = "" if r["noise_pct"] is None else f"±{r['noise_pct']:.1f}%"
+        lines.append(f"{change:>8}{'*' if r['significant'] else ' '} {noise:>7}  {r['a']:>10.4g}  {r['b']:>10.4g}  {r['metric']:<16} {r['name']}")
+    return "\n".join(lines)
 
 
 def _zone_counts(session: Session, name: str) -> tuple[dict[str, Any], Counter[int]]:
