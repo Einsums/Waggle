@@ -319,3 +319,9 @@ def test_calibrate_measures_this_machine_on_a_few_cores(tmp_path):
     assert peak["fp64_gflops_per_core"] > 0.5
     assert 1.5 < peak["fp32_gflops"] / peak["fp64_gflops"] < 2.5  # twice the lanes
     assert peak["dram_gbs"] > 0.1 and len(peak["dram_gbs_per_socket"]) >= 1
+    # Two threads are one per socket on a two-socket machine: each reads memory its own socket
+    # holds, so the two agree. Arrays zeroed on the main thread once put it all on one socket,
+    # and the other read across the link at half the rate.
+    per_socket = peak["dram_gbs_per_socket"]
+    if len(per_socket) > 1:
+        assert max(per_socket) / min(per_socket) < 1.5, per_socket

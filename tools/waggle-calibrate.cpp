@@ -26,6 +26,7 @@
 #include <cstring>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -250,8 +251,13 @@ auto measure_flops(std::vector<Cpu> const &use, bool fp64, double seconds) -> st
 /// The STREAM triad's bandwidth on @p use, every one of them on one socket: bytes the arrays held,
 /// three per element, over the best of several passes.
 auto measure_triad(std::vector<Cpu> const &use, long elements) -> double {
-    size_t const             n = use.size();
-    std::vector<double>      a(static_cast<size_t>(elements)), b(static_cast<size_t>(elements)), c(static_cast<size_t>(elements));
+    size_t const n = use.size();
+    // Not a std::vector, which zeroes its elements as it is made, on this thread: that places every
+    // page on this thread's NUMA node before the threads below touch them. Left uninitialized, the
+    // pages are placed as each thread first writes its own share, on that thread's node.
+    auto const               a = std::make_unique_for_overwrite<double[]>(static_cast<size_t>(elements));
+    auto const               b = std::make_unique_for_overwrite<double[]>(static_cast<size_t>(elements));
+    auto const               c = std::make_unique_for_overwrite<double[]>(static_cast<size_t>(elements));
     std::barrier             sync(static_cast<std::ptrdiff_t>(n));
     constexpr int            kPasses = 6;
     std::vector<double>      pass_seconds(kPasses, 0.0);
