@@ -405,3 +405,12 @@ foreach(_kind IN ITEMS PMU NUMA)
     endforeach()
   endif()
 endforeach()
+
+# Tests whose numbers depend on having the CPU (samples in a time, FLOP rates against a peak) run
+# alone even under ctest -j: a machine that limits a user's CPU (a cluster login node caps it at
+# one) otherwise shares it among them, and they measure each other.
+foreach(_test IN ITEMS SamplingSource SamplingSession RooflineSource RooflineSession NumaSession)
+  if(TEST ${WAGGLE_TEST_PREFIX}${_test})
+    set_property(TEST ${WAGGLE_TEST_PREFIX}${_test} PROPERTY RUN_SERIAL TRUE)
+  endif()
+endforeach()
