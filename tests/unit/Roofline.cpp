@@ -19,6 +19,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <ctime>
 #include <map>
 #include <string>
 #include <thread>
@@ -111,8 +112,15 @@ TEST_CASE("Events that do not fit one group are read as two, and each slot is it
         }
         CHECK(tc.groups == 2);
         backend.read(tc, before);
-        auto const until = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
-        while (std::chrono::steady_clock::now() < until) {
+        // Until the thread itself has run 20 ms, which a loaded machine may take far longer to give.
+        auto const cpu_ns = [] {
+            timespec now{};
+            clock_gettime(CLOCK_THREAD_CPUTIME_ID, &now);
+            return now.tv_sec * 1'000'000'000LL + now.tv_nsec;
+        };
+        auto const start    = cpu_ns();
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (cpu_ns() - start < 20'000'000 && std::chrono::steady_clock::now() < deadline) {
             g_sink.fetch_add(1, std::memory_order_relaxed);
         }
         backend.read(tc, after);
@@ -124,8 +132,7 @@ TEST_CASE("Events that do not fit one group are read as two, and each slot is it
     auto const once  = static_cast<double>(after[0] - before[0]);
     auto const twice = static_cast<double>(after[1] - before[1]);
     INFO("once " << once << " ns, twice " << twice << " ns");
-    // A loaded machine gives the thread less than the 50 ms it spins; the ratio is the check.
-    CHECK(once > 1e6);
+    CHECK(once > 1e7);
     CHECK(twice / once > 1.9);
     CHECK(twice / once < 2.1);
     CHECK(backend.slot_name(1) == "twice");
