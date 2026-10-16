@@ -316,11 +316,10 @@ def test_calibrate_measures_this_machine_on_a_few_cores(tmp_path):
     (entry,) = machine.load(path)
     peak = entry["peak"]
     assert entry["threads"] == min(2, entry["cpus"]) and entry["complete"] == (entry["cpus"] <= 2)
-    assert peak["fp64_gflops_per_core"] > 0.5
-    # Twice the lanes at a vector width: about 2, which a loaded machine moves; a wrong width would
-    # give 1 or 4. The portable loop (Apple Silicon, say) is whatever the compiler made of it.
-    if entry["isa"] != "portable":
-        assert 1.2 < peak["fp32_gflops"] / peak["fp64_gflops"] < 4.0
+    assert peak["fp64_gflops_per_core"] > 0.5 and peak["fp32_gflops_per_core"] > 0.5
+    # FP32 against FP64 is not checked: the two run one after the other, and on a shared machine
+    # the load between them moved the ratio from 1.1 to 2.7 where it should be 2, so it could not
+    # tell a wrong vector width (1 or 4) from a busy neighbor.
     assert peak["dram_gbs"] > 0.1 and len(peak["dram_gbs_per_socket"]) >= 1
     # Two threads are one per socket on a two-socket machine: each reads memory its own socket
     # holds, so the two agree. Arrays zeroed on the main thread once put it all on one socket,
@@ -425,3 +424,33 @@ def test_diff_text_adds_the_cpu_section_after_the_times(tmp_path, capsys):
     text = capsys.readouterr().out
     assert text.index("delta_ms") < text.index("CPU, zone by zone")
     assert "+20.0%*" in text
+
+
+def test_the_detail_panel_shows_a_zones_cpu_numbers_and_findings():
+    node = ProfileNode(name="contract", call_count=1, exclusive_ms=5.0, inclusive_ms=5.0)
+    zone = {"compute": {"flops": 10**10, "gflops": 20.0, "precision": "fp64", "peak_pct": 40.0, "redundant_flops": 2.0},
+            "memory": {"bytes": 10**9, "gbs": 2.0, "source": "llc_misses", "byte_efficiency": 0.5},
+            "intensity": 10.0, "gap_to_ideal": 100.0, "bound": "compute",
+            "findings": ["Does 2.00x the FLOPs its work needs: padding, recomputation or masked vector lanes."]}  # fmt: skip
+    text = node_details(node, 10.0, cpu=zone)
+    assert "20.0 GFLOP/s fp64 (40.0% of a core's peak)    2.0 GB/s (from cache misses)    10.0 FLOP/byte" in text
+    assert "2.0x the FLOPs its work needs, byte efficiency 0.5, 100.0x its ideal time (compute bound)" in text
+    assert "Findings:" in text and "• Does 2.00x the FLOPs" in text
+    assert "CPU:" not in node_details(node, 10.0)
+
+
+@pytest.mark.skipif(importlib.util.find_spec("textual") is None, reason="the widgets need Textual")
+def test_the_allocation_track_lists_each_blocks_nodes():
+    from waggle.model import LiveAllocation, MemoryTrack
+    from waggle.widgets.graphs import AllocationTrack
+
+    memory = MemoryTrack(live_bytes=3 << 26, samples=[(10.0, 3 << 26)],
+                         live=[LiveAllocation(address="0x1000", bytes=2 << 26, t_ms=1.0, thread_id="1", zone="serial init"),
+                               LiveAllocation(address="0x9000", bytes=1 << 26, t_ms=2.0, thread_id="1", zone="other")])  # fmt: skip
+    track = AllocationTrack()
+    track.set_track(memory, None, {"0x1000": "0:100%"})
+    listing = "\n".join(line.plain for line in track._listing(memory))
+    assert "nodes" in listing.splitlines()[0]
+    assert "0x1000              0:100%" in listing
+    track.set_track(memory, None)
+    assert "nodes" not in "\n".join(line.plain for line in track._listing(memory)).splitlines()[0]

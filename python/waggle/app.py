@@ -195,6 +195,8 @@ class ProfilerApp(App):
         #: being symbolized.
         self._hot_lines: dict[str, dict[str, dict]] = {}
         self._symbolizing: set[str] = set()
+        #: Each loaded session's NUMA nodes by block address, from its numa data.
+        self._numa_nodes: dict[str, dict[str, str]] = {}
         #: The source and collector problems already shown, per session.
         self._warned: dict[str, set[str]] = {}
         #: The time the Gantt chart and the allocation track show; reset when the session changes.
@@ -396,7 +398,7 @@ class ProfilerApp(App):
             if self._visible("gantt"):
                 self.query_one(GanttChart).set_events(session.timeline, window)
             if self._visible("memory"):
-                self.query_one(AllocationTrack).set_track(session.memory, window)
+                self.query_one(AllocationTrack).set_track(session.memory, window, self._block_nodes(session))
         if self._visible("devices"):
             self.query_one("#devices", TextPanel).show(device_table(session.devices))
         if self._visible("log"):
@@ -426,6 +428,7 @@ class ProfilerApp(App):
                 bookmarked=node.name in session.bookmarks,
                 hot_lines=sampled.get("hot_lines"),
                 caller_lines=sampled.get("caller_lines"),
+                cpu=sampled or None,
             )
         )
         if self._visible("source"):
@@ -439,6 +442,20 @@ class ProfilerApp(App):
                 self._disasm_target = target
                 clients = [c.get("name", "") for c in session.meta.clients] if session.meta else []
                 self._disassemble(*target, clients)
+
+    def _block_nodes(self, session: Session) -> dict[str, str]:
+        """Where the numa source last saw each block's pages, by address: worked out once per
+        session, as the data does not change once loaded."""
+        if session.session_id not in self._numa_nodes:
+            from .cpu import numa_report
+
+            report = numa_report(session.extensions.get("cpu") if isinstance(session.extensions.get("cpu"), dict) else None)
+            self._numa_nodes[session.session_id] = {
+                b["address"]: " ".join(f"{n}:{pct:.0f}%" for n, pct in b["nodes_pct"].items()) or "untouched"
+                for b in (report or {}).get("blocks", [])
+                if not b["freed"]
+            }
+        return self._numa_nodes[session.session_id]
 
     @work(group="symbols")
     async def _symbolize(self, session: Session) -> None:

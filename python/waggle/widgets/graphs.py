@@ -360,10 +360,14 @@ class AllocationTrack(_TimeChart):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._memory: MemoryTrack | None = None
+        self._placements: dict[str, str] = {}
 
-    def set_track(self, memory: MemoryTrack | None, window: tuple[float, float] | None) -> None:
+    def set_track(self, memory: MemoryTrack | None, window: tuple[float, float] | None, nodes: dict[str, str] | None = None) -> None:
+        """Show @p memory over @p window; @p nodes, by block address, where the numa source last saw
+        each block's pages ("0:97% 1:3%")."""
         self._memory = memory
         self._window = window
+        self._placements = nodes or {}
         self.refresh()
 
     def render(self) -> Text:
@@ -410,10 +414,12 @@ class AllocationTrack(_TimeChart):
         if not shown:
             return [Text("No allocation with an address is live", style="dim")]
         now = memory.samples[-1][0] if memory.samples else max(a.t_ms for a in shown)
-        out = [Text(f"{'bytes':>10}  {'age':>10}  {'thread':<8}{'address':<20}zone", style="bold")]
+        nodes = f"{'nodes':<16}" if self._placements else ""
+        out = [Text(f"{'bytes':>10}  {'age':>10}  {'thread':<8}{'address':<20}{nodes}zone", style="bold")]
         for a in shown[: self.LISTED]:
             age = _format_age(max(0.0, now - a.t_ms))
-            out.append(Text(f"{format_bytes(a.bytes):>10}  {age:>10}  {'T' + a.thread_id:<8}{a.address:<20}{a.zone or '(no zone)'}"))
+            placed = f"{self._placements.get(a.address, ''):<16}" if self._placements else ""
+            out.append(Text(f"{format_bytes(a.bytes):>10}  {age:>10}  {'T' + a.thread_id:<8}{a.address:<20}{placed}{a.zone or '(no zone)'}"))
         if len(shown) > self.LISTED:
             out.append(Text(f"... and {len(shown) - self.LISTED} more", style="dim"))
         return out

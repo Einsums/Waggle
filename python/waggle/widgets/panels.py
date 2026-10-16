@@ -61,9 +61,11 @@ def node_details(
     bookmarked: bool = False,
     hot_lines: list[dict] | None = None,
     caller_lines: list[dict] | None = None,
+    cpu: dict | None = None,
 ) -> str:
     """The detail panel's markup for *node*; *pct* is its share of the thread's exclusive time.
-    *hot_lines* are the zone's, every thread's together, from ``waggle.cpu.summary``."""
+    *hot_lines*, *caller_lines* and *cpu* (the zone's whole entry) are the zone's, every thread's
+    together, from ``waggle.cpu.summary``."""
     lines = [
         f"[bold]{escape(node.name)}[/bold]{' ⚑' if bookmarked else ''}",
         f"  exclusive: {node.exclusive_ms:.3f} ms  ({pct:.1f}%)    calls: {node.call_count}    avg: {node.mean_ms:.3f} ms",
@@ -108,11 +110,33 @@ def node_details(
         for hot in hot_lines:
             where = f"{Path(hot['file']).name}:{hot['line']}" if hot.get("file") else "(no line information)"
             lines.append(f"    {hot['samples_pct']:5.1f}%  {escape(where)}  {escape(hot['function'])}")
+    if cpu and (compute := cpu.get("compute")):
+        memory = cpu.get("memory") or {}
+        text = f"{compute['gflops']} GFLOP/s {compute['precision']}"
+        if compute.get("peak_pct") is not None:
+            text += f" ({compute['peak_pct']}% of a core's peak)"
+        if memory:
+            text += f"    {memory['gbs']} GB/s (from cache misses)"
+        if cpu.get("intensity") is not None:
+            text += f"    {cpu['intensity']} FLOP/byte"
+        lines.append(f"  [bold]CPU:[/bold]  {escape(text)}")
+        work = []
+        if compute.get("redundant_flops") is not None:
+            work.append(f"{compute['redundant_flops']}x the FLOPs its work needs")
+        if memory.get("byte_efficiency") is not None:
+            work.append(f"byte efficiency {memory['byte_efficiency']}")
+        if cpu.get("gap_to_ideal") is not None:
+            work.append(f"{cpu['gap_to_ideal']}x its ideal time ({cpu.get('bound')} bound)")
+        if work:
+            lines.append(f"    {escape(', '.join(work))}")
     if caller_lines:
         lines.append("  [bold]Calls into code without lines[/bold] (by the calling line):")
         for call in caller_lines[:3]:
             where = f"{Path(call['file']).name}:{call['line']}" if call.get("file") else "(no line information)"
             lines.append(f"    {call['samples_pct']:5.1f}%  {escape(where)}  calls {escape(call['callee'])}")
+    if cpu and cpu.get("findings"):
+        lines.append("  [bold]Findings:[/bold]")
+        lines += [f"    • {escape(finding)}" for finding in cpu["findings"]]
     if node.annotations:
         lines.append("  [bold]Annotations:[/bold]")
         lines += [f"    {escape(k)} = {_annotation_text(v)}" for k, v in node.annotations.items()]
