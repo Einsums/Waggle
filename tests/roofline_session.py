@@ -29,9 +29,9 @@ def check(condition: bool, what: str) -> None:
         sys.exit(1)
 
 
-def zone(program: str, case: str, name: str, tmp: Path) -> dict:
+def zone(program: str, case: str, name: str, tmp: Path, **extra: str) -> dict:
     saved = tmp / f"{name.split()[-1]}.json"
-    env = dict(os.environ, WAGGLE_SOURCES="roofline", WAGGLE_SAVE=str(saved), WAGGLE_REPORT="false")
+    env = dict(os.environ, WAGGLE_SOURCES="roofline", WAGGLE_SAVE=str(saved), WAGGLE_REPORT="false", **extra)
     subprocess.run([program, case], env=env, check=True, stdout=subprocess.DEVNULL)
     out = subprocess.run([sys.executable, "-m", "waggle", "cpu", str(saved), "--format", "json"], capture_output=True, text=True)
     zones = {z["name"]: z for z in json.loads(out.stdout)["zones"]} if out.returncode == 0 else {}
@@ -57,6 +57,17 @@ def main() -> None:
         strided = zone(program, "[.strided]", "roofline: strided", Path(tmp))
         efficiency = strided["memory"]["byte_efficiency"]
         check(0.05 < efficiency < 0.5, f"reading every eighth double has byte efficiency {efficiency}, not well under 1")
+        # With a real BLAS, on one thread as the counters are the zone's thread's: a tuned multiply
+        # does what its work needs, and, where the machine is calibrated, runs near a core's peak.
+        built = subprocess.run([program, "--list-tests", "[.dgemm_large]"], capture_output=True, text=True).stdout
+        if "dgemm" in built:
+            large = zone(program, "[.dgemm_large]", "roofline: dgemm_large", Path(tmp), OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1")
+            redundant = large["compute"]["redundant_flops"]
+            check(0.97 < redundant < 1.05, f"the BLAS multiply does {redundant}x the FLOPs its work needs, not about 1")
+            if (peak := large["compute"].get("peak_pct")) is not None:
+                check(peak > 40.0, f"the BLAS multiply runs at {peak}% of a core's peak, not near it")
+                check(large.get("bound") == "compute", f"the BLAS multiply is {large.get('bound')} bound, not compute")
+            print(f"roofline: the BLAS multiply at {peak}% of a core's peak")
     print(f"roofline: efficiencies as expected (strided {efficiency})")
 
 

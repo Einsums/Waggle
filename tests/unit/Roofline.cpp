@@ -287,3 +287,25 @@ TEST_CASE("Roofline - a program that reads every eighth double", "[.strided]") {
         g_sink += static_cast<uint64_t>(sum);
     }
 }
+
+#ifdef WAGGLE_TEST_HAVE_BLAS
+// The Fortran interface every BLAS has, declared here so no header's location matters.
+extern "C" void dgemm_(char const *transa, char const *transb, int const *m, int const *n, int const *k, double const *alpha,
+                       double const *a, int const *lda, double const *b, int const *ldb, double const *beta, double *c, int const *ldc);
+
+// Run by tests/roofline_session.py with one BLAS thread, as the counters are the zone's thread's: a
+// matrix multiply as a tuned library does it, compute bound and near the machine's peak.
+TEST_CASE("Roofline - a program that multiplies large matrices with a BLAS", "[.dgemm_large]") {
+    constexpr int       n = 2048;
+    std::vector<double> a(std::size_t{n} * n, 1.0), b(std::size_t{n} * n, 0.5), c(std::size_t{n} * n, 0.0);
+    double const        one = 1.0;
+    char const          no  = 'N';
+    for (int call = 0; call < 3; ++call) {
+        waggle::ScopedZone const zone("roofline: dgemm_large");
+        waggle::annotate("work.flops", 2.0 * n * n * static_cast<double>(n));
+        waggle::annotate("work.bytes", 3.0 * n * static_cast<double>(n) * sizeof(double));
+        dgemm_(&no, &no, &n, &n, &n, &one, a.data(), &n, b.data(), &n, &one, c.data(), &n);
+    }
+    g_sink += static_cast<uint64_t>(c[n]);
+}
+#endif

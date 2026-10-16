@@ -11,6 +11,8 @@ dependencies:
   - pybind11
   # LLVM's OpenMP runtime, which has OMPT, for the OpenMP source's test
   - llvm-openmp
+  # a real BLAS, for the roofline source's test of a matrix multiply near the machine's peak
+  - openblas
   # apiary generates waggle._core from python/src/Core.hpp
   - apiary >=1.2,<2
   - pytest

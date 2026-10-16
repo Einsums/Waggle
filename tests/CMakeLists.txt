@@ -92,6 +92,12 @@ endif()
 # missing it says why and skips (Catch2's exit code 4).
 add_executable(waggle_Roofline_test unit/Roofline.cpp)
 target_link_libraries(waggle_Roofline_test PRIVATE Waggle::internal Catch2::Catch2WithMain)
+# A real BLAS, where there is one, for a matrix multiply that runs near the machine's peak.
+find_package(BLAS QUIET)
+if(BLAS_FOUND)
+  target_link_libraries(waggle_Roofline_test PRIVATE BLAS::BLAS)
+  target_compile_definitions(waggle_Roofline_test PRIVATE WAGGLE_TEST_HAVE_BLAS)
+endif()
 add_dependencies(waggle_tests waggle_Roofline_test)
 add_test(NAME ${WAGGLE_TEST_PREFIX}Roofline COMMAND waggle_Roofline_test "[backend]")
 set_tests_properties(${WAGGLE_TEST_PREFIX}Roofline PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false" TIMEOUT 300 SKIP_RETURN_CODE 4)
