@@ -454,3 +454,33 @@ def test_the_allocation_track_lists_each_blocks_nodes():
     assert "0x1000              0:100%" in listing
     track.set_track(memory, None)
     assert "nodes" not in "\n".join(line.plain for line in track._listing(memory)).splitlines()[0]
+
+
+@pytest.mark.skipif(importlib.util.find_spec("textual") is None, reason="the app needs Textual")
+def test_the_viewer_fetches_a_live_programs_cpu_data():
+    from waggle.app import ProfilerApp
+    from waggle.testing import META, fake_server, snapshot_msg, wait_for
+
+    # A program offering the collector's "cpu" handler, whose zone "outer" has samples.
+    meta = {**META, "handlers": ["cpu"]}
+    cpu_data = {"schema": "waggle.cpu/1", "machine": {}, "sampling": SESSION["extensions"]["cpu"]["sampling"], "modules": [],
+                "zones": [{"thread": 7, "path": ["outer"], "samples": 400, "addresses": {"0x10": 300, "0x20": 100}}],
+                "no_zone": {"samples": 0, "addresses": {}}}  # fmt: skip
+    asked = []
+
+    def answer(method):
+        asked.append(method)
+        return cpu_data if method == "cpu" else {}
+
+    async def main():
+        server, port = await fake_server([(json.dumps(m) + "\n").encode() for m in (meta, snapshot_msg(1))], on_request=answer)
+        app = ProfilerApp([("127.0.0.1", port)], mdns=False)
+        async with app.run_test(size=(140, 50)) as pilot:
+            await wait_for(pilot, lambda: app.active_view is not None and app.selected_node is not None)
+            detail = app.query_one("#detail")
+            await wait_for(pilot, lambda: "Hot lines" in detail._text)
+            assert "cpu" in asked
+            await pilot.press("q")
+        server.close()
+
+    asyncio.run(main())

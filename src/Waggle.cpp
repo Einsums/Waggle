@@ -194,6 +194,15 @@ Profiler::Profiler() : _consumer(std::make_unique<Consumer>(_strings, _sites)) {
         s = _settings.current();
     }
     apply(s);
+    // The CPU sources' data as a session file would hold it, for a viewer of a live program: the
+    // summary, symbols and findings are the viewer's work, as they are for a saved session. Run on
+    // the server's thread, outside the consumer's lock.
+    register_handler("cpu", [this](std::string const & /*params*/) {
+        _consumer->numa_pass();
+        auto        lock = _consumer->lock_shared();
+        std::string json = _consumer->cpu_json(roofline::status().state == "active");
+        return json.empty() ? std::string("{}") : json;
+    });
     s_built.store(this, std::memory_order_release);
     register_exit_hook();
 }

@@ -14,8 +14,10 @@ which ctest requires; exits 4, which ctest counts as skipped, where perf_event c
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
@@ -82,6 +84,43 @@ def check_caller_lines(program: str, tmp: Path) -> None:
     print(f"sampling: lines {first} and {second} called the library for {a} and {b} samples")
 
 
+def check_live(program: str) -> None:
+    """A viewer of the running program gets its samples from the collector's "cpu" handler."""
+    from waggle.client import ProfileClient
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    env = dict(os.environ, WAGGLE_SOURCES="sampling", WAGGLE_SERVER="1", WAGGLE_PORT=str(port), WAGGLE_REPORT="false")
+    running = subprocess.Popen([program, "[.hot_line]"], env=env, stdout=subprocess.DEVNULL)
+
+    async def ask() -> dict:
+        client = ProfileClient("127.0.0.1", port)
+        for _ in range(100):  # the server starts with the program
+            if await client.connect():
+                break
+            await asyncio.sleep(0.02)
+        reader = asyncio.create_task(_drain(client))
+        await asyncio.sleep(1.0)  # a second of the hot loop
+        reply = await client.request("cpu")
+        reader.cancel()
+        await client.close()
+        return reply
+
+    try:
+        reply = asyncio.run(ask())
+    finally:
+        running.wait(timeout=60)
+    zones = {z["path"][-1]: z["samples"] for z in reply.get("zones", [])}
+    check(zones.get("hot_line", 0) > 100, f"the live cpu reply has {zones} for its zones")
+    print(f"sampling: a viewer of the live program got {zones['hot_line']} samples of hot_line")
+
+
+async def _drain(client) -> None:
+    async for _ in client.messages():
+        pass
+
+
 def main() -> None:
     program = sys.argv[1]
     with tempfile.TemporaryDirectory() as tmp:
@@ -104,6 +143,7 @@ def main() -> None:
         check(zones["saved_a"]["calls"] > 0, "the summary joins the profile's calls")
         check_hot_line(program, Path(tmp))
         check_caller_lines(program, Path(tmp))
+        check_live(program)
     print(f"sampling: {summary['sampling']['samples']} samples as expected")
 
 if __name__ == "__main__":

@@ -34,6 +34,7 @@ The server writes JSON lines over TCP: one object per line, each with a ``type``
 
 ``response``
     The answer to a viewer's ``request``: ``{"type": "request", "id": ..., "method": ..., "params": {...}}`` is answered with ``{"type": "response", "id": ..., "data": {...}}``.
+    Besides the handlers libraries register, the collector answers ``cpu`` with the ``cpu`` extension a session file would hold now (below), or ``{}`` when no CPU source has run.
 
 Messages a library publishes carry its own ``type``.
 All times are milliseconds since the program started.

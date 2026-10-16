@@ -197,6 +197,8 @@ class ProfilerApp(App):
         self._symbolizing: set[str] = set()
         #: Each loaded session's NUMA nodes by block address, from its numa data.
         self._numa_nodes: dict[str, dict[str, str]] = {}
+        #: When each live session's CPU data was last fetched, on the event loop's clock.
+        self._cpu_fetched: dict[str, float] = {}
         #: The source and collector problems already shown, per session.
         self._warned: dict[str, set[str]] = {}
         #: The time the Gantt chart and the allocation track show; reset when the session changes.
@@ -418,6 +420,7 @@ class ProfilerApp(App):
         if "cpu" in session.extensions and not known:
             self._symbolizing.add(session.session_id)
             self._symbolize(session)
+        self._maybe_fetch_cpu(session)
         sampled = self._hot_lines.get(session.session_id, {}).get(node.name, {})
         detail.show(
             node_details(
@@ -457,10 +460,42 @@ class ProfilerApp(App):
             }
         return self._numa_nodes[session.session_id]
 
+    #: Seconds between fetches of a live program's CPU data while a zone is shown.
+    CPU_REFRESH_S = 5.0
+
+    def _maybe_fetch_cpu(self, session: Session) -> None:
+        """For a live program that offers the collector's "cpu" handler, fetch its CPU data now and
+        then: the same data a saved session holds, so the same summary reads it."""
+        client = self._session_clients.get(session.session_id)
+        handlers = session.meta.handlers if session.meta else None
+        if client is None or handlers is None or "cpu" not in handlers or session.session_id in self._symbolizing:
+            return
+        now = asyncio.get_running_loop().time()
+        if now - self._cpu_fetched.get(session.session_id, float("-inf")) < self.CPU_REFRESH_S:
+            return
+        self._cpu_fetched[session.session_id] = now
+        self._symbolizing.add(session.session_id)
+        self._fetch_cpu(session, client)
+
+    @work(group="symbols")
+    async def _fetch_cpu(self, session: Session, client: ProfileClient) -> None:
+        reply = await client.request("cpu")
+        if isinstance(reply, dict) and reply.get("schema") and "error" not in reply:
+            session.extensions["cpu"] = reply
+            self._numa_nodes.pop(session.session_id, None)
+            # The summary as for a saved session; addresses named before are not looked up again.
+            await self._summarize(session)
+        else:
+            self._symbolizing.discard(session.session_id)
+
     @work(group="symbols")
     async def _symbolize(self, session: Session) -> None:
         """Name a loaded session's samples by line, once, off the interface's thread: addr2line can
         take seconds over a large program."""
+        await self._summarize(session)
+
+    async def _summarize(self, session: Session) -> None:
+        """The session's CPU summary, by zone, for the detail panel; run in a worker."""
         from .cpu import summary
 
         try:

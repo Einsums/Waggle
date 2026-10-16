@@ -191,7 +191,7 @@ With the source on, each thread writes a zone's opening as it happens, so the co
 The consumer's own thread is not sampled.
 ``waggle cpu`` ranks zones by their share of the samples, each with its hottest source lines.
 ``--zone NAME --lines`` lists every line and function of one zone with samples, ``--zone NAME --asm`` the machine code of its hottest function with the samples on each instruction (``--line N`` picks the function holding line N and marks its instructions), and ``--zone NAME`` alone its samples by address.
-The viewer's detail panel shows a saved session's hot lines too.
+The viewer's detail panel shows a zone's hot lines too, with its rates, efficiencies and findings: for a saved session, and for a live program, whose CPU data it asks for every few seconds while a zone is shown.
 
 .. code-block:: console
 
