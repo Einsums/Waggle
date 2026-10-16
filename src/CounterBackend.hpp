@@ -32,6 +32,12 @@ struct ThreadCounters {
     int  count       = 0; ///< events opened
     bool open        = false;
     bool multiplexed = false; ///< whether the groups share the PMU in turns, and readings are scaled
+    /// Linux perf's: each event's page of the kernel's, mapped when the thread may read its counters
+    /// in user space (rdpmc) rather than with a system call; null where it may not.
+    void *pages[kMaxCounterEvents] = {}; // NOLINT(modernize-avoid-c-arrays)
+    bool  user_reads               = false;
+    /// Each event's last count, unscaled: what a user read is checked against (see user_count).
+    mutable std::array<uint64_t, kMaxCounterEvents> last_event{};
     /// Each slot's last reading: a scaled reading can come out a little under the one before, and
     /// a zone's counters are differences.
     mutable std::array<uint64_t, kNumCounterSlots> last{};
@@ -41,8 +47,9 @@ struct ThreadCounters {
  * @brief Where hardware counter values come from: the "counters" source's backend.
  *
  * Counters are read as a zone opens and as it closes, on the zone's thread, so a backend reads
- * only the calling thread's. Reading costs a system call, a few hundred nanoseconds, against a few
- * nanoseconds for a zone without counters: that is why the source is off unless asked for.
+ * only the calling thread's. Reading costs tens of nanoseconds in user space (rdpmc), or a system
+ * call's few hundred, against a few for a zone without counters: that is why the source is off
+ * unless asked for.
  */
 class CounterBackend {
   public:
@@ -92,6 +99,13 @@ WAGGLE_EXPORT auto roofline_counters() -> std::string;
 /// Threads whose counter groups did not fit the PMU at once, and are multiplexed.
 WAGGLE_EXPORT auto multiplexed_threads() -> uint64_t;
 
+/// Threads that read their counters in user space, with rdpmc, and readings taken so; and readings
+/// those threads took with a system call instead, as when the kernel had moved a counter off the
+/// PMU for a while. For the sources' status and tests.
+WAGGLE_EXPORT auto user_read_threads() -> uint64_t;
+WAGGLE_EXPORT auto user_reads() -> uint64_t;
+WAGGLE_EXPORT auto user_read_fallbacks() -> uint64_t;
+
 /// Why perf_event_open failed with @p error, in terms a person can act on: the sysctl to change, a
 /// container's seccomp profile, or a machine with no counters. The counters and sampling sources'.
 WAGGLE_EXPORT auto perf_refusal(int error) -> std::string;
@@ -99,7 +113,8 @@ WAGGLE_EXPORT auto perf_refusal(int error) -> std::string;
 /// which cannot change the machine's.
 WAGGLE_EXPORT auto perf_refusal(int error, std::string const &paranoid) -> std::string;
 
-/// Linux perf_event_open: a group of counters, read together in one system call.
+/// Linux perf_event_open: a group of counters, read in user space with rdpmc where the kernel lets
+/// the thread, else together in one system call.
 class WAGGLE_EXPORT PerfCounterBackend : public CounterBackend {
   public:
     /// A counter to open: what reports call it, and perf_event_attr's type and config.
@@ -147,6 +162,8 @@ class WAGGLE_EXPORT PerfCounterBackend : public CounterBackend {
 
   private:
     auto open_group(ThreadCounters &counters, int first, int end) -> bool;
+    /// Map each event's page, so the thread reads its counters with rdpmc, when the kernel lets it.
+    void map_user_reads(ThreadCounters &counters);
 
     std::vector<EventCode> _events;
     std::vector<Slot>      _slots;
@@ -155,6 +172,7 @@ class WAGGLE_EXPORT PerfCounterBackend : public CounterBackend {
     bool                   _opened{false}; ///< whether any thread opened, which fixes the set
     mutable std::mutex     _mutex;         // threads open their counters concurrently
     std::string            _why_not;
+    std::string            _why_no_user_reads; ///< why the last thread to open reads with system calls
 };
 #endif
 

@@ -137,6 +137,50 @@ TEST_CASE("Events that do not fit one group are read as two, and each slot is it
     CHECK(twice / once < 2.1);
     CHECK(backend.slot_name(1) == "twice");
 }
+
+TEST_CASE("A thread reads its counters in user space, as a system call would", "[backend]") {
+    waggle::PerfCounterBackend backend(
+        {{"instructions", PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS}, {"cycles", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES}});
+    std::array<uint64_t, waggle::kNumCounterSlots> user_before{}, user_after{};
+    uint64_t                                       syscall_between = 0;
+    bool                                           opened = false, user = false;
+    auto const                                     reads_before = waggle::user_reads();
+    std::string                                    described;
+    std::thread([&] {
+        waggle::ThreadCounters tc;
+        opened = backend.open(tc);
+        user   = opened && tc.user_reads;
+        if (!user) {
+            backend.close(tc);
+            return;
+        }
+        // Each reading's instructions, the user ones on either side of the kernel's.
+        backend.read(tc, user_before);
+        struct {
+            uint64_t nr, time_enabled, time_running, values[2];
+        } reading{};
+        CHECK(::read(tc.fds[0], &reading, sizeof(reading)) == sizeof(reading));
+        syscall_between = reading.values[0];
+        backend.read(tc, user_after);
+        described = backend.describe(); // while this thread reads so
+        backend.close(tc);
+    }).join();
+    if (!user) {
+        std::string const why = opened ? backend.describe() : backend.why_not();
+        if (std::getenv("WAGGLE_REQUIRE_PMU") != nullptr && !opened) { // NOLINT(concurrency-mt-unsafe)
+            FAIL(why);
+        }
+        SKIP(why);
+    }
+    INFO("user " << user_before[0] << ", system call " << syscall_between << ", user " << user_after[0]);
+    // Rescheduled between two reads, a user one may have fallen back to the system call: either way
+    // the three come in order, a system call's few thousand instructions apart.
+    CHECK(user_before[0] <= syscall_between);
+    CHECK(syscall_between <= user_after[0]);
+    CHECK(user_after[0] - user_before[0] < 1'000'000);
+    CHECK(waggle::user_reads() > reads_before);
+    CHECK(described.find("rdpmc on 1 thread(s)") != std::string::npos);
+}
 #else
 TEST_CASE("Events that do not fit one group are read as two, and each slot is its weighted sum", "[backend]") {
     SKIP("the roofline source's counter groups are Linux perf_event's");

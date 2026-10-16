@@ -34,7 +34,7 @@ counters
 
 Each zone's hardware counters, read as it opens and as it closes:
 
-* **Linux**: cycles, instructions, cache misses and branch misses, through ``perf_event_open``, read as one group in one system call.
+* **Linux**: cycles, instructions, cache misses and branch misses, through ``perf_event_open``, read in user space with ``rdpmc`` on x86-64, or as one group in one system call.
   ``kernel.perf_event_paranoid`` must be 2 or less, and a virtual machine often has no hardware counters; the status says which.
 * **macOS**: cycles and instructions, and the share of each that ran on the efficiency cores, through XNU's per-thread counts.
   No root is needed.
@@ -42,7 +42,9 @@ Each zone's hardware counters, read as it opens and as it closes:
   A virtual Mac has no counters, and says so.
 * **Windows**: none yet.
 
-Reading costs a system call, about 100 ns on an M4, twice per zone: a counted zone costs about 200 ns against a few for an uncounted one.
+On x86-64 Linux a thread reads its counters in user space, with ``rdpmc``, about 30 ns a reading, so a counted zone costs about 100 ns against about 20 for an uncounted one (Xeon 6972P).
+Where the kernel does not allow that (``/sys/bus/event_source/devices/cpu/rdpmc`` at 0, software events), when the counters share the PMU in turns, or for a moment when the kernel has moved one off it, a reading is a system call, a few hundred nanoseconds, and a counted zone costs about 800 ns; the status says which.
+On macOS a reading is a system call, about 100 ns on an M4, so a counted zone costs about 200 ns.
 That suits zones that last microseconds or more.
 A thread counts if the source was asked for when it first recorded.
 
@@ -165,7 +167,7 @@ The source shares each thread's counter group with ``counters``: with both asked
 A group holds cycles, instructions and five more events; where the PMU cannot hold them at once (four general counters per thread with hyper-threading on), it is split in two, which take turns, and the counts are scaled by the time each ran, as ``perf`` does.
 The status then says so, as short zones carry more error.
 The counters are chosen before any thread opens them, so ask for the source in the environment, or configure Waggle before threads record.
-Reading costs a zone what ``counters`` does, a system call as it opens and as it closes.
+Reading costs a zone what ``counters`` does, as it opens and as it closes: in user space when the group fits the PMU, and a system call when it is split.
 
 sampling
 ========

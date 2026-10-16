@@ -21,6 +21,7 @@
 #if defined(__linux__)
 #    include <linux/perf_event.h>
 #    include <sys/ioctl.h>
+#    include <sys/mman.h>
 #    include <sys/syscall.h>
 #    include <unistd.h>
 #elif defined(__APPLE__)
@@ -106,6 +107,55 @@ auto default_counters() -> std::vector<PerfCounterBackend::Counter> {
 
 /// Threads whose groups take turns on the PMU, for the roofline source's status.
 std::atomic<uint64_t> g_multiplexed{0};
+/// Threads reading their counters with rdpmc, the readings taken so, and those that fell back.
+std::atomic<uint64_t> g_user_read_threads{0};
+std::atomic<uint64_t> g_user_reads{0};
+std::atomic<uint64_t> g_user_read_fallbacks{0};
+
+/// One event's count, read in user space from its page: the kernel's count when it last scheduled
+/// the event in, plus the hardware counter's since. False when the event is not on a counter now
+/// (index 0), its count would need scaling, or user reads are not allowed: then read() it. A
+/// sequence lock, which the kernel bumps when it reschedules the event, makes the pair consistent.
+///
+/// The page's offset is the count less the counter's previous raw value, which the kernel keeps
+/// sign extended when it programs the counter and not once it has read it, so the sum can come out
+/// 2^width low. A count only grows, by far less than 2^width between two readings: one under
+/// @p last, the event's previous count, is that one.
+auto user_count(void const *page, uint64_t last, uint64_t &count) -> bool {
+#    if defined(__x86_64__)
+    auto const *pc    = static_cast<perf_event_mmap_page const volatile *>(page);
+    uint32_t    seq   = 0;
+    int64_t     value = 0;
+    do {
+        seq = pc->lock;
+        std::atomic_signal_fence(std::memory_order_seq_cst);
+        uint32_t const index = pc->index;
+        // Times differ only when the event shared the PMU with others and its count is scaled.
+        if (pc->cap_user_rdpmc == 0 || index == 0 || pc->time_enabled != pc->time_running) {
+            return false;
+        }
+        uint32_t low  = 0;
+        uint32_t high = 0;
+        __asm__ volatile("rdpmc" : "=a"(low), "=d"(high) : "c"(index - 1));
+        // The hardware counter is pmc_width bits wide; its value is the low bits, sign extended.
+        auto const width = static_cast<uint32_t>(pc->pmc_width);
+        auto const shift = 64U - width;
+        auto const raw   = (static_cast<uint64_t>(high) << 32U) | low;
+        value            = pc->offset + (static_cast<int64_t>(raw << shift) >> shift);
+        if (value < static_cast<int64_t>(last) && width < 64) {
+            value += static_cast<int64_t>(uint64_t{1} << width);
+        }
+        std::atomic_signal_fence(std::memory_order_seq_cst);
+    } while (pc->lock != seq);
+    count = static_cast<uint64_t>(value);
+    return true;
+#    else
+    (void)page;
+    (void)last;
+    (void)count;
+    return false;
+#    endif
+}
 
 /// A group's reading: PERF_FORMAT_GROUP with both times, then each event's count.
 struct GroupReading {
@@ -147,6 +197,12 @@ auto PerfCounterBackend::reconfigure(std::vector<EventCode> events, std::vector<
 
 auto PerfCounterBackend::describe() const -> std::string {
     std::scoped_lock const lock(_mutex);
+    if (auto const n = user_read_threads(); n > 0) {
+        return fmt::format("{}, read in user space with rdpmc on {} thread(s)", _description, n);
+    }
+    if (!_why_no_user_reads.empty()) {
+        return fmt::format("{}, read with a system call: {}", _description, _why_no_user_reads);
+    }
     return _description;
 }
 
@@ -232,13 +288,68 @@ auto PerfCounterBackend::open(ThreadCounters &tc) -> bool {
     tc.multiplexed = tc.groups > 1;
     if (tc.multiplexed) {
         g_multiplexed.fetch_add(1, std::memory_order_relaxed);
+        std::scoped_lock const lock(_mutex);
+        _why_no_user_reads = "its groups take turns on the PMU, and their counts are scaled";
+    } else {
+        map_user_reads(tc);
     }
     tc.last.fill(0);
+    tc.last_event.fill(0);
     tc.open = true;
     return true;
 }
 
+void PerfCounterBackend::map_user_reads(ThreadCounters &tc) {
+#    if defined(__x86_64__)
+    auto const  page_size = static_cast<size_t>(sysconf(_SC_PAGESIZE));
+    char const *why       = nullptr;
+    for (int i = 0; i < tc.count && why == nullptr; ++i) {
+        void *page = mmap(nullptr, page_size, PROT_READ, MAP_SHARED, tc.fds[i], 0);
+        if (page == MAP_FAILED) {
+            why = "the kernel would not map the counters' pages";
+            break;
+        }
+        tc.pages[i] = page;
+        // Software events (task-clock) have no hardware counter, and a kernel with
+        // /sys/bus/event_source/devices/cpu/rdpmc at 0 allows none.
+        if (static_cast<perf_event_mmap_page const *>(page)->cap_user_rdpmc == 0) {
+            why = "the kernel does not allow rdpmc for them (software events, or /sys/bus/event_source/devices/cpu/rdpmc is 0)";
+        }
+    }
+    if (why != nullptr) {
+        for (void *&page : tc.pages) {
+            if (page != nullptr) {
+                munmap(page, page_size);
+                page = nullptr;
+            }
+        }
+        std::scoped_lock const lock(_mutex);
+        _why_no_user_reads = why;
+        return;
+    }
+    tc.user_reads = true;
+    g_user_read_threads.fetch_add(1, std::memory_order_relaxed);
+#    else
+    std::scoped_lock const lock(_mutex);
+    _why_no_user_reads = "user-space reads are implemented for x86-64 only";
+    (void)tc;
+#    endif
+}
+
 void PerfCounterBackend::close(ThreadCounters &tc) {
+    if (tc.user_reads || std::ranges::any_of(tc.pages, [](void *page) { return page != nullptr; })) {
+        auto const page_size = static_cast<size_t>(sysconf(_SC_PAGESIZE));
+        for (void *&page : tc.pages) {
+            if (page != nullptr) {
+                munmap(page, page_size);
+                page = nullptr;
+            }
+        }
+        if (tc.user_reads) {
+            g_user_read_threads.fetch_sub(1, std::memory_order_relaxed);
+        }
+        tc.user_reads = false;
+    }
     for (int &fd : tc.fds) {
         if (fd >= 0) {
             ::close(fd);
@@ -260,6 +371,23 @@ void PerfCounterBackend::read(ThreadCounters const &tc, std::array<uint64_t, kNu
     // turns: the kernel's estimate of what it would have counted alone.
     double counts[kMaxCounterEvents]{}; // NOLINT(modernize-avoid-c-arrays)
     for (int g = 0; g < tc.groups; ++g) {
+        if (tc.user_reads) {
+            // A few tens of nanoseconds a counter, against a system call's few hundred for the group.
+            bool all = true;
+            for (int i = tc.group_start[g]; i < tc.group_start[g + 1] && all; ++i) {
+                uint64_t count = 0;
+                all            = user_count(tc.pages[i], tc.last_event[static_cast<size_t>(i)], count);
+                counts[i]      = static_cast<double>(count);
+                if (all) {
+                    tc.last_event[static_cast<size_t>(i)] = count;
+                }
+            }
+            if (all) {
+                g_user_reads.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
+            g_user_read_fallbacks.fetch_add(1, std::memory_order_relaxed);
+        }
         GroupReading reading{};
         if (::read(tc.fds[tc.group_start[g]], &reading, sizeof(reading)) < static_cast<ssize_t>(3 * sizeof(uint64_t))) {
             return;
@@ -269,7 +397,8 @@ void PerfCounterBackend::read(ThreadCounters const &tc, std::array<uint64_t, kNu
                                  : static_cast<double>(reading.time_enabled) / static_cast<double>(reading.time_running);
         auto const   n     = std::min<uint64_t>(reading.nr, static_cast<uint64_t>(tc.group_start[g + 1] - tc.group_start[g]));
         for (uint64_t i = 0; i < n; ++i) {
-            counts[tc.group_start[g] + static_cast<int>(i)] = static_cast<double>(reading.values[i]) * scale;
+            counts[tc.group_start[g] + static_cast<int>(i)]                                = static_cast<double>(reading.values[i]) * scale;
+            tc.last_event[static_cast<size_t>(tc.group_start[g]) + static_cast<size_t>(i)] = reading.values[i];
         }
     }
     // The slots are fixed once any thread has opened (reconfigure refuses then), and this thread
@@ -405,6 +534,18 @@ auto roofline_counters() -> std::string {
 
 auto multiplexed_threads() -> uint64_t {
     return g_multiplexed.load(std::memory_order_relaxed);
+}
+
+auto user_read_threads() -> uint64_t {
+    return g_user_read_threads.load(std::memory_order_relaxed);
+}
+
+auto user_reads() -> uint64_t {
+    return g_user_reads.load(std::memory_order_relaxed);
+}
+
+auto user_read_fallbacks() -> uint64_t {
+    return g_user_read_fallbacks.load(std::memory_order_relaxed);
 }
 
 auto get_counter_backend() -> CounterBackend & {

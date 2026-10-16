@@ -225,6 +225,8 @@ TEST_CASE("Bench ZoneCost: one zone, whole and in pieces", "[Profile][ZoneCost][
     show("fetch_add on a shared atomic  [was x4]", per_op([](int) { g_shared_counter.fetch_add(1, std::memory_order_relaxed); }));
     {
         // What a zone pays twice when the counters source is on: one reading of the thread's counters.
+        // A second set beside the thread's own: with the roofline source's seven events the two
+        // share the PMU in turns, and this one is read with a system call rather than rdpmc.
         prof::ThreadCounters counters;
         if (prof::get_counter_backend().open(counters)) {
             show("counter backend read  [x2 with the counters source]", per_op([&](int) {
