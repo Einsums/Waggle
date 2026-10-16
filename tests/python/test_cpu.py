@@ -370,7 +370,7 @@ def test_findings_fire_at_their_thresholds_and_name_their_numbers():
     assert found[0] == "41% of samples in pack_b at Contract.cpp:212: the line to look at first."
     assert "52% of samples in dgemm, called from Contract.cpp:240" in found[1]
     assert any("Compute bound yet at 12% of a core's peak" in f for f in found)
-    assert any("Moves 6.2x the DRAM bytes" in f for f in found)
+    assert any("6.2x the compulsory DRAM bytes" in f for f in found)
     assert any("Does 1.50x the FLOPs" in f for f in found)
     assert any("Takes 4.5x its ideal time (compute bound)" in f for f in found)
 
@@ -402,6 +402,10 @@ def test_the_cpu_diff_marks_changes_beyond_each_zones_noise(tmp_path, monkeypatc
     gflops = {r["name"]: r for r in rows if r["metric"] == "gflops"}
     assert gflops["steady"]["change_pct"] == 20.0 and gflops["steady"]["significant"]
     assert gflops["noisy"]["change_pct"] == 2.0 and not gflops["noisy"]["significant"]
+    # Time per call beside the rates, under the same rule: 3x the combined spread of per-call times.
+    times = {r["name"]: r for r in rows if r["metric"] == "time_ms"}
+    assert times["steady"]["a"] == 10.0 and times["steady"]["change_pct"] == -16.7 and times["steady"]["significant"]
+    assert times["steady"]["noise_pct"] == 4.2  # 3 x sqrt(0.1^2 + 0.1^2) / 10
 
     for name, data in (("a.json", a), ("b.json", b)):
         (tmp_path / name).write_text(json.dumps(data))

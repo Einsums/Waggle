@@ -140,7 +140,7 @@ Each zone's floating-point operations and an estimate of the bytes it moved to a
 * **Bytes** are last-level cache misses times 64, per thread: an estimate, exact in whom it credits but low for streaming code, as lines the hardware prefetches are not misses.
   A zone that streams 512 MB counts roughly half of it.
 
-``waggle cpu`` also says what the numbers mean, zone by zone, in *findings* that name the numbers behind them: one line taking 30% or more of a zone's samples, 30% or more of them in a library called from one line, compute-bound work at under 25% of a core's peak, moving over twice the DRAM bytes the work needs, 1.2x or more the FLOPs it needs, four times its ideal time or more, and the ``numa`` source's placement findings.
+``waggle cpu`` also says what the numbers mean, zone by zone, in *findings* that name the numbers behind them: one line taking 30% or more of a zone's samples, 30% or more of them in a library called from one line, compute-bound work at under 25% of a core's peak, moving over twice the compulsory DRAM bytes, 1.2x or more the FLOPs it needs, four times its ideal time or more, and the ``numa`` source's placement findings.
 They read only the summary's neutral numbers, so they hold whatever measured them.
 
 With a calibration, each counted zone also gets what its numbers mean against the machine:

@@ -52,8 +52,8 @@ def zone_findings(zone: dict[str, Any]) -> list[str]:
         )
     if memory.get("byte_efficiency") is not None and memory["byte_efficiency"] < LOW_BYTE_EFFICIENCY:
         found.append(
-            f"Moves {1 / memory['byte_efficiency']:.1f}x the DRAM bytes its work needs: blocking for cache or fusing it with "
-            f"its neighbors would cut the traffic."
+            f"{1 / memory['byte_efficiency']:.1f}x the compulsory DRAM bytes: blocking for cache or fusing it with its "
+            f"neighbors would cut the traffic."
         )
     if compute.get("redundant_flops") is not None and compute["redundant_flops"] >= REDUNDANT_FLOPS:
         found.append(

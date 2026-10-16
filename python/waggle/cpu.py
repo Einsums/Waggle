@@ -397,15 +397,13 @@ def summary(session: Session, *, symbols: bool = True, machine_file: str | None 
 
 
 def _noise_pct(node_a: Any, node_b: Any) -> float | None:
-    """Twice the relative standard error of the difference of two zones' mean time per call, in
-    percent: a rate that changed by less moved within the zone's own run-to-run spread."""
-    parts = []
-    for node in (node_a, node_b):
-        if node is None or not node.call_count or node.exclusive_ms <= 0:
-            return None
-        mean = node.exclusive_ms / node.call_count
-        parts.append((node.stddev_ms / mean) ** 2 / node.call_count)
-    return round(200.0 * sum(parts) ** 0.5, 1)
+    """Three times the combined standard deviation of two zones' per-call times, as a percentage of
+    the first's mean: the rule the GPU diff uses, on means, as Waggle keeps no median. A rate that
+    changed by less moved within the zone's own run-to-run spread."""
+    if node_a is None or node_b is None or not node_a.call_count or node_a.exclusive_ms <= 0:
+        return None
+    mean_a = node_a.exclusive_ms / node_a.call_count
+    return round(300.0 * (node_a.stddev_ms**2 + node_b.stddev_ms**2) ** 0.5 / mean_a, 1)
 
 
 def cpu_diff(a: Session, b: Session, machine_file: str | None = None) -> list[dict[str, Any]]:
@@ -417,7 +415,8 @@ def cpu_diff(a: Session, b: Session, machine_file: str | None = None) -> list[di
         for s in (a, b)
     )
     zones_a, zones_b = {z["name"]: z for z in sa["zones"]}, {z["name"]: z for z in sb["zones"]}
-    metrics = (("samples_pct", lambda z: z.get("samples_pct")),
+    metrics = (("time_ms", lambda z: z.get("_mean_ms")),
+               ("samples_pct", lambda z: z.get("samples_pct")),
                ("gflops", lambda z: (z.get("compute") or {}).get("gflops")),
                ("peak_pct", lambda z: (z.get("compute") or {}).get("peak_pct")),
                ("gbs", lambda z: (z.get("memory") or {}).get("gbs")),
@@ -426,7 +425,11 @@ def cpu_diff(a: Session, b: Session, machine_file: str | None = None) -> list[di
                ("gap_to_ideal", lambda z: z.get("gap_to_ideal")))  # fmt: skip
     rows = []
     for name in [n for n in zones_a if n in zones_b]:
-        za, zb = zones_a[name], zones_b[name]
+        za, zb = dict(zones_a[name]), dict(zones_b[name])
+        # Mean time per call, beside the rates, as a change reads "time 0.53 to 0.20 ms".
+        for zone, flat in ((za, flat_a), (zb, flat_b)):
+            if (node := flat.get(name)) is not None and node.call_count:
+                zone["_mean_ms"] = round(node.exclusive_ms / node.call_count, 6)
         noise = _noise_pct(flat_a.get(name), flat_b.get(name))
         for metric, get in metrics:
             va, vb = get(za), get(zb)
@@ -437,7 +440,7 @@ def cpu_diff(a: Session, b: Session, machine_file: str | None = None) -> list[di
             if metric == "samples_pct":
                 # A share of samples is binomial: its noise is the samples', not the calls'.
                 spread = sum((v / 100) * (1 - v / 100) / max(n, 1) for v, n in ((va, za["samples"]), (vb, zb["samples"])))
-                row["noise_pct"] = round(200.0 * spread**0.5 / (va / 100), 1) if va else None
+                row["noise_pct"] = round(300.0 * spread**0.5 / (va / 100), 1) if va else None
             else:
                 row["noise_pct"] = noise
             row["significant"] = change is not None and row["noise_pct"] is not None and abs(change) > row["noise_pct"]
