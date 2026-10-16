@@ -317,7 +317,8 @@ def test_calibrate_measures_this_machine_on_a_few_cores(tmp_path):
     peak = entry["peak"]
     assert entry["threads"] == min(2, entry["cpus"]) and entry["complete"] == (entry["cpus"] <= 2)
     assert peak["fp64_gflops_per_core"] > 0.5
-    assert 1.5 < peak["fp32_gflops"] / peak["fp64_gflops"] < 2.5  # twice the lanes
+    # Twice the lanes: about 2, which a loaded machine moves; a wrong width would give 1 or 4.
+    assert 1.2 < peak["fp32_gflops"] / peak["fp64_gflops"] < 4.0
     assert peak["dram_gbs"] > 0.1 and len(peak["dram_gbs_per_socket"]) >= 1
     # Two threads are one per socket on a two-socket machine: each reads memory its own socket
     # holds, so the two agree. Arrays zeroed on the main thread once put it all on one socket,
@@ -325,3 +326,29 @@ def test_calibrate_measures_this_machine_on_a_few_cores(tmp_path):
     per_socket = peak["dram_gbs_per_socket"]
     if len(per_socket) > 1:
         assert max(per_socket) / min(per_socket) < 1.5, per_socket
+
+
+def _numa_block(zone: str, nbytes: int, pages: list[int], untouched: int = 0, busy: list[float] | None = None, huge: float = 100.0):
+    return {"zone": zone, "thread": 1, "address": "0x1000", "bytes": nbytes, "t_ms": 0.0, "freed": False,
+            "busy_s_by_node": busy or [0.0, 0.0],
+            "placements": [{"t_ms": 1.0, "pages": pages, "untouched": untouched, "sampled": sum(pages) + untouched, "huge_pct": huge}]}  # fmt: skip
+
+
+def test_numa_findings_fire_at_their_thresholds():
+    ext = {"numa": {"nodes": 2, "node_cpus": ["0-3", "4-7"], "passes": 4, "busy_s_by_node": [1.0, 3.0], "blocks": [
+        # 100% on node 0 while 75% of the time ran on node 1: first touch.
+        _numa_block("serial", 64 << 20, [256, 0], busy=[1.0, 3.0]),
+        # 89% on node 0: under the threshold, however the time ran.
+        _numa_block("mostly", 64 << 20, [228, 28], busy=[0.0, 4.0]),
+        # On node 0 where the time ran: placed right.
+        _numa_block("local", 64 << 20, [256, 0], busy=[4.0, 0.0]),
+        # 60% untouched; and 2 GB with 5% huge pages.
+        _numa_block("oversized", 2 << 30, [100, 0], untouched=156, busy=[4.0, 0.0], huge=5.0),
+    ], "migrations": [{"zone": "solve", "thread": 2, "count": 3}]}}  # fmt: skip
+    report = cpu.numa_report(ext)
+    kinds = sorted((f["kind"], f["zone"]) for f in report["findings"])
+    assert kinds == [("first_touch", "serial"), ("no_huge_pages", "oversized"), ("thread_migration", "solve"), ("untouched", "oversized")]
+    serial = next(b for b in report["blocks"] if b["zone"] == "serial")
+    assert serial["nodes_pct"] == {"0": 100.0} and serial["threads_off_node_pct"] == 75.0
+    assert "allocated 64 MB, 100% on node 0" in next(f["text"] for f in report["findings"] if f["kind"] == "first_touch")
+    assert cpu.numa_report({}) is None

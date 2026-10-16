@@ -64,7 +64,7 @@ Every setting by name (as ``waggle_config_set``, ``waggle.configure`` and ``wagg
     * - ``sources``
       - ``WAGGLE_SOURCES``
       - empty
-      - Optional instruments to turn on, comma-separated: ``counters``, ``energy``, ``openmp``, ``roofline``, ``sampling``, ``signposts``.
+      - Optional instruments to turn on, comma-separated: ``counters``, ``energy``, ``numa``, ``openmp``, ``roofline``, ``sampling``, ``signposts``.
     * - ``trace``
       - ``WAGGLE_TRACE``
       - empty
@@ -77,6 +77,10 @@ Every setting by name (as ``waggle_config_set``, ``waggle.configure`` and ``wagg
       - ``WAGGLE_ROOFLINE_PRECISION``
       - ``fp64``
       - Which FLOPs the ``roofline`` source counts: ``fp64`` or ``fp32``.
+    * - ``numa_min_bytes``
+      - ``WAGGLE_NUMA_MIN_BYTES``
+      - ``16777216``
+      - Smallest block, in bytes, whose NUMA placement the ``numa`` source checks.
     * - ``sampling_callchain``
       - ``WAGGLE_SAMPLING_CALLCHAIN``
       - ``true``

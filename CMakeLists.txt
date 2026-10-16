@@ -36,6 +36,7 @@ add_library(
   src/Duplicates.cpp
   src/Energy.cpp
   src/Mdns.cpp
+  src/Numa.cpp
   src/Ompt.cpp
   src/Process.cpp
   src/Sampling.cpp

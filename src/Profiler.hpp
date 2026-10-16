@@ -455,8 +455,9 @@ struct WAGGLE_EXPORT Profiler {
         /// registered, and its counters opened.
         bool counters{false};
         /// Whether each Push is written as its zone opens rather than once something happens inside
-        /// it: the sampling source credits a sample by the zones open in the ring when it is read, so
-        /// an open zone must be there. Set for every thread as the source is switched.
+        /// it: the sampling source credits a sample by the zones open in the ring when it is read,
+        /// and the numa source notes a zone whose thread moves nodes, so an open zone must be there.
+        /// Set for every thread as the sources are switched.
         std::atomic<bool> push_now{false};
         /// Its open counters.
         ThreadCounters counter_state{};
@@ -527,9 +528,10 @@ struct WAGGLE_EXPORT Profiler {
     std::atomic<bool> _counters_wanted{false};
     /// Likewise for the signposts source.
     std::atomic<bool> _signposts_wanted{false};
-    /// Whether the sampling source is asked for, which every thread's @ref ThreadChannel::push_now
-    /// follows. Changed under _channels_mutex, so a thread registering takes the value in force.
-    std::atomic<bool> _sampling_wanted{false};
+    /// Whether the sampling or numa source is asked for, which every thread's
+    /// @ref ThreadChannel::push_now follows. Changed under _channels_mutex, so a thread registering
+    /// takes the value in force.
+    std::atomic<bool> _push_now_wanted{false};
 
     /// The next device submission's token; 0 is none.
     std::atomic<uint64_t> _next_device_token{1};

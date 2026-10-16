@@ -39,6 +39,7 @@ void for_each_setting(Update &update, Settings &settings, F &&f) {
     f(13, "sampling_rate", update.sampling_rate, settings.sampling_rate);
     f(14, "sampling_callchain", update.sampling_callchain, settings.sampling_callchain);
     f(15, "roofline_precision", update.roofline_precision, settings.roofline_precision);
+    f(16, "numa_min_bytes", update.numa_min_bytes, settings.numa_min_bytes);
 }
 
 template <typename T>
@@ -171,6 +172,7 @@ auto SettingsStore::apply_environment(EnvironmentReader const &getenv) -> std::v
     take_int("WAGGLE_SAMPLING_RATE", update.sampling_rate);
     take_bool("WAGGLE_SAMPLING_CALLCHAIN", update.sampling_callchain);
     take_string("WAGGLE_ROOFLINE_PRECISION", update.roofline_precision);
+    take_int("WAGGLE_NUMA_MIN_BYTES", update.numa_min_bytes);
 
     // Below explicit settings: fill only what no library set.
     for_each_setting(update, _settings, [this](int index, char const * /*name*/, auto const &wanted, auto &current) {

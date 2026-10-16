@@ -116,6 +116,7 @@ auto apply_settings(SettingsUpdate const &update, Set set) -> int {
     one("sampling_rate", update.sampling_rate);
     one("sampling_callchain", update.sampling_callchain);
     one("roofline_precision", update.roofline_precision);
+    one("numa_min_bytes", update.numa_min_bytes);
     std::vector<char const *> values;
     values.reserve(texts.size());
     for (auto const &text : texts) {
@@ -254,6 +255,7 @@ inline Settings settings() {
     number("sampling_rate", s.sampling_rate);
     flag("sampling_callchain", s.sampling_callchain);
     text("roofline_precision", s.roofline_precision);
+    number("numa_min_bytes", s.numa_min_bytes);
     return s;
 }
 

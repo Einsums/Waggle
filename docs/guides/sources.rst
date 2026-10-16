@@ -72,6 +72,33 @@ What that means for the numbers:
 Every thread that records is read, whenever the source was asked for.
 Linux has no per-thread energy (its RAPL measures a whole processor package), and a virtual Mac estimates none; the source says so.
 
+numa
+====
+
+Which NUMA node each large block's pages are on, set against the nodes the program's threads run on, on Linux.
+Its target is the first-touch mistake: one thread initializes a tensor, every page lands on that thread's node, and threads on other nodes then read it across the interconnect at a fraction of local bandwidth.
+No counter makes that obvious, and it can halve a bandwidth-bound contraction on a machine of two sockets.
+
+.. code-block:: console
+
+    $ WAGGLE_SOURCES=numa WAGGLE_SAVE=run.json ./myprogram
+    $ waggle cpu run.json --numa
+
+The blocks are those recorded with an address (``WAGGLE_MEM_ALLOC_AT``) of ``numa_min_bytes`` (16 MB) or more, the 64 largest.
+At most every 500 ms, and as the session is saved, the consumer asks the kernel where 256 pages spread over each block are (``move_pages`` with no target, which only queries), reads each thread's CPU and CPU time from ``/proc``, and each block's share of huge pages from ``/proc/self/smaps``.
+A block's placement is kept each time it changes, so the session shows when pages moved.
+``waggle cpu --numa`` lists every block, and these findings, each naming the zone that allocated the block:
+
+* **First touch**: a block 90% or more on one node while 25% or more of the threads' CPU time, while it was live, ran on other nodes.
+  Initialize it in parallel with the compute's schedule, or interleave it.
+* **Untouched pages**: more than half of a block never touched; it is larger than it needs to be, or allocated well before it is used.
+* **Thread migration**: a thread ran on another node with a zone still open; bind threads (``OMP_PROC_BIND=close``, ``OMP_PLACES=cores``).
+* **No huge pages**: a block of 1 GB or more with under 10% of its pages huge.
+
+With the source on, each thread writes a zone's opening as it happens, as with ``sampling``, so the zone open on a thread is known when it moves.
+A block freed without ``WAGGLE_MEM_FREE`` is seen as gone once its pages are unmapped, not as untouched.
+On a machine of one node the source says it is unavailable.
+
 openmp
 ======
 

@@ -98,6 +98,14 @@ set_tests_properties(${WAGGLE_TEST_PREFIX}Roofline PROPERTIES ENVIRONMENT "WAGGL
 add_test(NAME ${WAGGLE_TEST_PREFIX}RooflineSource COMMAND waggle_Roofline_test "[source]")
 set_tests_properties(${WAGGLE_TEST_PREFIX}RooflineSource PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false;WAGGLE_SOURCES=roofline" TIMEOUT 300 SKIP_RETURN_CODE 4)
 
+# The numa source's queries of the system; where the machine has one node, what needs two skips
+# (Catch2's exit code 4).
+add_executable(waggle_Numa_test unit/Numa.cpp)
+target_link_libraries(waggle_Numa_test PRIVATE Waggle::internal Catch2::Catch2WithMain)
+add_dependencies(waggle_tests waggle_Numa_test)
+add_test(NAME ${WAGGLE_TEST_PREFIX}Numa COMMAND waggle_Numa_test "[numa]")
+set_tests_properties(${WAGGLE_TEST_PREFIX}Numa PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false" TIMEOUT 300 SKIP_RETURN_CODE 4)
+
 # The energy source, asked for in the environment; where there is no per-thread energy it checks
 # the source says why, and skips (Catch2's exit code 4).
 add_executable(waggle_Energy_test unit/Energy.cpp)
@@ -323,6 +331,15 @@ if(Python3_Interpreter_FOUND)
   endif()
   add_test(NAME ${WAGGLE_TEST_PREFIX}SamplingSession COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/sampling_session.py
                                                            $<TARGET_FILE:waggle_Sampling_test>
+  )
+  # The numa source end to end: first touch and migration found in saved sessions; skipped (exit
+  # code 4) on a machine of one node.
+  add_test(NAME ${WAGGLE_TEST_PREFIX}NumaSession COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/numa_session.py
+                                                       $<TARGET_FILE:waggle_Numa_test>
+  )
+  set_tests_properties(
+    ${WAGGLE_TEST_PREFIX}NumaSession PROPERTIES ENVIRONMENT "PYTHONPATH=${_waggle_sampling_python_path}" TIMEOUT 300 SKIP_RETURN_CODE 4
+                                                PASS_REGULAR_EXPRESSION "numa: findings as expected"
   )
   set_tests_properties(
     ${WAGGLE_TEST_PREFIX}SamplingSession PROPERTIES ENVIRONMENT "PYTHONPATH=${_waggle_sampling_python_path}" TIMEOUT 300 SKIP_RETURN_CODE 4

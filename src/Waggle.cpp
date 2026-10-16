@@ -217,16 +217,19 @@ void Profiler::apply(Settings const &s) {
     // Energy is sampled by the consumer for every recording thread, whenever it was asked for.
     std::string why_not;
     _consumer->set_energy(source_requested(s, "energy") && energy_available(why_not));
-    // Sampling too, for every thread of the process: the consumer opens the events, and every
-    // recording thread writes its pushes as they happen, so the zones open at a sample are known.
+    // Sampling too, for every thread of the process: the consumer opens the events. It and the numa
+    // source ask what zone is open on a thread at a moment, so with either every recording thread
+    // writes its pushes as they happen: a zone with nothing inside is otherwise unseen until it closes.
     {
         bool const             sampling = source_requested(s, "sampling");
+        bool const             numa     = source_requested(s, "numa");
         std::scoped_lock const lock(_channels_mutex);
-        _sampling_wanted.store(sampling, std::memory_order_relaxed);
+        _push_now_wanted.store(sampling || numa, std::memory_order_relaxed);
         for (auto const &channel : _channels) {
-            channel->push_now.store(sampling, std::memory_order_relaxed);
+            channel->push_now.store(sampling || numa, std::memory_order_relaxed);
         }
         _consumer->set_sampling(sampling, static_cast<uint64_t>(std::max<std::int64_t>(s.sampling_rate, 0)), s.sampling_callchain);
+        _consumer->set_numa(numa, s.numa_min_bytes);
     }
     _consumer->set_max_distinct_children(s.max_distinct_children);
     // "{pid}" keeps the processes of one run, MPI ranks say, from writing one file.
@@ -442,7 +445,7 @@ auto Profiler::register_thread() -> ThreadChannel & {
     }
 
     std::scoped_lock const lock(_channels_mutex);
-    channel->push_now.store(_sampling_wanted.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    channel->push_now.store(_push_now_wanted.load(std::memory_order_relaxed), std::memory_order_relaxed);
     _channels.push_back(channel);
     return *channel;
 }

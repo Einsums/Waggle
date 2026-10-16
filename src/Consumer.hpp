@@ -280,9 +280,27 @@ class WAGGLE_EXPORT Consumer {
     /// Caller must hold the shared lock.
     [[nodiscard]] auto unzoned_samples() const -> SampleCounts const & { return _unzoned; }
 
-    /// The session file's "cpu" extension: the sampler and each zone's samples by address. Empty
-    /// when sampling never ran. Caller must hold the shared lock.
-    [[nodiscard]] auto cpu_json() const -> std::string;
+    /// The session file's "cpu" extension: the machine, then what the sampling and numa sources
+    /// found, each when it ran. Empty when neither ran, unless @p always (the roofline source
+    /// needs the machine). Caller must hold the shared lock.
+    [[nodiscard]] auto cpu_json(bool always = false) const -> std::string;
+
+    /// The numa source: where each large block's pages are, set against the nodes the program's
+    /// threads run on, checked by @ref numa_pass at most every 500 ms while it is on. Blocks of
+    /// @p min_bytes or more recorded with an address are checked, the largest 64. Safe while the
+    /// consumer runs.
+    void set_numa(bool on, int64_t min_bytes);
+    /// Check placement now, as the session file does before it is written. Takes the tree lock:
+    /// the caller must not hold it.
+    void numa_pass();
+    /// What the numa source has done, for its status. Safe from any thread.
+    struct NumaState {
+        bool     wanted{false};
+        int      nodes{1};
+        uint64_t passes{0};
+        uint64_t blocks{0}; ///< checked in the last pass
+    };
+    [[nodiscard]] auto numa_state() const -> NumaState;
 
     /// Write every zone from now on to a Perfetto trace at @p path, after closing any trace being
     /// written; an empty path just closes it. The same path again changes nothing. Returns why the
@@ -487,12 +505,52 @@ class WAGGLE_EXPORT Consumer {
     std::unordered_map<uint64_t, uint32_t>                  _thread_of_kernel;          ///< kernel id -> thread id
     std::deque<WaitingSample>                              *_draining_samples{nullptr}; ///< the thread being drained's
     SampleCounts                                            _unzoned;
-    std::mutex                                              _added_mutex;
-    std::vector<sampling::Sample>                           _added_samples;   ///< from add_samples, for the next pass
-    sampling::ClockPair                                     _sample_anchor{}; ///< read as each pass reads samples
-    static constexpr size_t                                 kMaxWaitingSamples = 16384;
-    mutable std::mutex                                      _sampling_state_mutex;
-    SamplingState                                           _sampling_state;
+
+    /// The numa source, under _tree_mutex except the switches and the pass mutex. A block keeps
+    /// its placement each time it changes, and the CPU time the process's threads spent on each
+    /// node while it was live; freed blocks are kept, up to kMaxKeptNumaBlocks. A thread that runs
+    /// on another node than at the last pass, with the same zone still open, counts a migration.
+    struct NumaPlacement {
+        double                t_ms;
+        std::vector<uint32_t> pages;
+        uint32_t              untouched;
+        uint32_t              sampled;
+        double                huge_pct;
+    };
+    struct NumaBlock {
+        uint64_t                   address{0};
+        int64_t                    bytes{0};
+        double                     t_ms{0.0};
+        uint32_t                   thread_id{0};
+        uint32_t                   name_id{0};
+        bool                       freed{false};
+        std::vector<double>        busy_s; ///< by node
+        std::vector<NumaPlacement> placements;
+    };
+    struct NumaThread {
+        uint64_t       busy_ticks{0};
+        AggNode const *zone{nullptr};
+        uint64_t       zone_calls{0};
+        int            node{-1};
+    };
+    std::atomic<bool>                                    _numa_on{false};
+    std::atomic<int64_t>                                 _numa_min_bytes{int64_t{16} << 20};
+    std::mutex                                           _numa_pass_mutex; ///< one pass at a time
+    std::map<uint64_t, NumaBlock>                        _numa_blocks;     ///< by address
+    std::unordered_map<uint64_t, NumaThread>             _numa_threads;    ///< by kernel thread id
+    std::vector<double>                                  _numa_busy_s;     ///< by node, the whole run
+    std::map<std::pair<std::string, uint32_t>, uint64_t> _numa_migrations; ///< (zone, thread) -> times
+    std::atomic<uint64_t>                                _numa_passes{0};
+    std::atomic<uint64_t>                                _numa_blocks_checked{0};
+    static constexpr size_t                              kMaxNumaBlocks     = 64;
+    static constexpr size_t                              kMaxKeptNumaBlocks = 256;
+    [[nodiscard]] auto                                   numa_json() const -> std::string;
+    std::mutex                                           _added_mutex;
+    std::vector<sampling::Sample>                        _added_samples;   ///< from add_samples, for the next pass
+    sampling::ClockPair                                  _sample_anchor{}; ///< read as each pass reads samples
+    static constexpr size_t                              kMaxWaitingSamples = 16384;
+    mutable std::mutex                                   _sampling_state_mutex;
+    SamplingState                                        _sampling_state;
 
     /// Hold @p sample until its thread's events say which zone was open when it was taken.
     void queue_sample(sampling::Sample const &sample);

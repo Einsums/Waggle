@@ -19,6 +19,7 @@
 
 #include "Detail/JsonEscape.hpp"
 #include "Energy.hpp"
+#include "Numa.hpp"
 #include "Process.hpp"
 
 WAGGLE_NAMESPACE_BEGIN
@@ -362,16 +363,22 @@ void write_samples_json(std::string &out, SampleCounts const &samples) {
 
 } // namespace
 
-auto Consumer::cpu_json() const -> std::string {
-    if (!_sampling_ever) {
+auto Consumer::cpu_json(bool always) const -> std::string {
+    bool const numa = _numa_passes.load(std::memory_order_relaxed) > 0;
+    if (!_sampling_ever && !numa && !always) {
         return {};
     }
-    auto const  state = sampling_state();
-    std::string out =
-        fmt::format(R"({{"schema": "waggle.cpu/1", "machine": {}, "sampling": {{"event": "{}", "rate_hz": {}, "callchain": {}, )"
-                    R"("threads": {}, "samples": {}, "lost": {}}}, "modules": {}, "zones": [)",
-                    sampling::machine_json(), state.event, state.rate_hz, state.callchain, state.threads, state.samples, state.lost,
-                    sampling::module_map_json());
+    std::string out = fmt::format(R"({{"schema": "waggle.cpu/1", "machine": {})", sampling::machine_json());
+    if (numa) {
+        out += R"(, "numa": )" + numa_json();
+    }
+    if (!_sampling_ever) {
+        return out + "}";
+    }
+    auto const state = sampling_state();
+    out += fmt::format(R"(, "sampling": {{"event": "{}", "rate_hz": {}, "callchain": {}, "threads": {}, "samples": {}, "lost": {}}}, )"
+                       R"("modules": {}, "zones": [)",
+                       state.event, state.rate_hz, state.callchain, state.threads, state.samples, state.lost, sampling::module_map_json());
     bool first = true;
     for (auto const &[thread_id, ts] : _threads) {
         // Each zone with samples, named by its path from the thread's root; an explicit stack, as
@@ -398,6 +405,195 @@ auto Consumer::cpu_json() const -> std::string {
     write_samples_json(out, _unzoned);
     out += "}}";
     return out;
+}
+
+void Consumer::set_numa(bool on, int64_t min_bytes) {
+    _numa_min_bytes.store(min_bytes, std::memory_order_relaxed);
+    _numa_on.store(on, std::memory_order_relaxed);
+}
+
+auto Consumer::numa_state() const -> NumaState {
+    return {.wanted = _numa_on.load(std::memory_order_relaxed),
+            .nodes  = numa::topology().nodes,
+            .passes = _numa_passes.load(std::memory_order_relaxed),
+            .blocks = _numa_blocks_checked.load(std::memory_order_relaxed)};
+}
+
+void Consumer::numa_pass() {
+    auto const &topo = numa::topology();
+    if (!_numa_on.load(std::memory_order_relaxed) || topo.nodes < 2) {
+        return;
+    }
+    std::scoped_lock const pass(_numa_pass_mutex);
+    auto const             nodes = static_cast<size_t>(topo.nodes);
+
+    // The blocks to check: the largest live ones recorded with an address.
+    struct Candidate {
+        uint64_t address;
+        int64_t  bytes;
+    };
+    std::vector<Candidate> candidates;
+    {
+        std::shared_lock const lock(_tree_mutex);
+        int64_t const          least = _numa_min_bytes.load(std::memory_order_relaxed);
+        for (auto const &[address, rec] : _live) {
+            if (rec.bytes >= least) {
+                candidates.push_back({.address = address, .bytes = rec.bytes});
+            }
+        }
+    }
+    size_t const kept = std::min(candidates.size(), kMaxNumaBlocks);
+    std::partial_sort(candidates.begin(), candidates.begin() + static_cast<std::ptrdiff_t>(kept), candidates.end(),
+                      [](Candidate const &a, Candidate const &b) { return a.bytes > b.bytes; });
+    candidates.resize(kept);
+
+    // The system's answers, without the lock: none of them reads the tree.
+    auto const                   tasks = numa::tasks();
+    std::vector<numa::Placement> placements;
+    placements.reserve(candidates.size());
+    for (auto const &c : candidates) {
+        placements.push_back(numa::placement(c.address, c.bytes));
+    }
+    auto const   huge = candidates.empty() ? std::vector<numa::Mapping>{} : numa::huge_mappings();
+    double const t_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - _program_start).count();
+
+    std::unique_lock const lock(_tree_mutex);
+    // Each thread's CPU time since the last pass, on the node of the CPU it is on now; and a zone
+    // still open on another node than at the last pass.
+    std::vector<double>          busy(nodes, 0.0);
+    std::unordered_set<uint64_t> seen;
+    for (auto const &task : tasks) {
+        seen.insert(task.tid);
+        int const node =
+            task.cpu >= 0 && static_cast<size_t>(task.cpu) < topo.node_of_cpu.size() ? topo.node_of_cpu[static_cast<size_t>(task.cpu)] : -1;
+        AggNode const *zone      = nullptr;
+        uint32_t       thread_id = 0;
+        if (auto const k = _thread_of_kernel.find(task.tid); k != _thread_of_kernel.end()) {
+            thread_id = k->second;
+            if (auto const t = _threads.find(thread_id); t != _threads.end() && !t->second.stack.empty()) {
+                zone = t->second.stack.back().node;
+            }
+        }
+        uint64_t const calls       = zone != nullptr ? zone->call_count : 0;
+        auto [entry, first_time]   = _numa_threads.try_emplace(task.tid);
+        NumaThread &thread         = entry->second;
+        bool const  same_zone_open = !first_time && zone != nullptr && zone == thread.zone && calls == thread.zone_calls;
+        if (!first_time && node >= 0 && task.busy_ticks >= thread.busy_ticks) {
+            busy[static_cast<size_t>(node)] += static_cast<double>(task.busy_ticks - thread.busy_ticks) / numa::ticks_per_second();
+        }
+        if (same_zone_open && node >= 0 && thread.node >= 0 && node != thread.node) {
+            ++_numa_migrations[{zone->name, thread_id}];
+        }
+        thread = {.busy_ticks = task.busy_ticks, .zone = zone, .zone_calls = calls, .node = node};
+    }
+    std::erase_if(_numa_threads, [&](auto const &entry) { return !seen.contains(entry.first); });
+    _numa_busy_s.resize(nodes, 0.0);
+    for (size_t n = 0; n < nodes; ++n) {
+        _numa_busy_s[n] += busy[n];
+    }
+
+    // Blocks: freed since, then this pass's placements, kept when they changed.
+    for (auto &[address, block] : _numa_blocks) {
+        auto const live = _live.find(address);
+        block.freed     = block.freed || live == _live.end() || live->second.bytes != block.bytes;
+    }
+    for (size_t i = 0; i < candidates.size(); ++i) {
+        auto const live = _live.find(candidates[i].address);
+        if (live == _live.end() || placements[i].sampled == 0) {
+            continue;
+        }
+        // Every page unmapped: freed without a free being recorded. Gone, not untouched.
+        if (placements[i].unmapped == placements[i].sampled) {
+            if (auto const known = _numa_blocks.find(candidates[i].address); known != _numa_blocks.end()) {
+                known->second.freed = true;
+            }
+            continue;
+        }
+        auto [entry, created] = _numa_blocks.try_emplace(candidates[i].address);
+        NumaBlock &block      = entry->second;
+        if (created || block.freed) {
+            block = {.address   = candidates[i].address,
+                     .bytes     = live->second.bytes,
+                     .t_ms      = live->second.t_ms,
+                     .thread_id = live->second.thread_id,
+                     .name_id   = live->second.name_id,
+                     .busy_s    = std::vector<double>(nodes, 0.0)};
+        }
+        for (size_t n = 0; n < nodes; ++n) {
+            block.busy_s[n] += busy[n];
+        }
+        auto const &p       = placements[i];
+        auto const  changed = [&](NumaPlacement const &last) {
+            // More than 2% of the sampled pages moved, or were touched.
+            auto const threshold = std::max<uint32_t>(1, p.sampled / 50);
+            for (size_t n = 0; n < nodes; ++n) {
+                if (std::abs(static_cast<int64_t>(p.pages[n]) - static_cast<int64_t>(last.pages[n])) > threshold) {
+                    return true;
+                }
+            }
+            return std::abs(static_cast<int64_t>(p.untouched) - static_cast<int64_t>(last.untouched)) > threshold;
+        };
+        if (block.placements.empty() || changed(block.placements.back())) {
+            block.placements.push_back({.t_ms      = t_ms,
+                                        .pages     = p.pages,
+                                        .untouched = p.untouched,
+                                        .sampled   = p.sampled,
+                                        .huge_pct  = numa::huge_percent(huge, candidates[i].address, candidates[i].bytes)});
+        }
+    }
+    // Past the bound, the freed blocks go, oldest first.
+    while (_numa_blocks.size() > kMaxKeptNumaBlocks) {
+        auto oldest = _numa_blocks.end();
+        for (auto it = _numa_blocks.begin(); it != _numa_blocks.end(); ++it) {
+            if (it->second.freed && (oldest == _numa_blocks.end() || it->second.t_ms < oldest->second.t_ms)) {
+                oldest = it;
+            }
+        }
+        if (oldest == _numa_blocks.end()) {
+            break;
+        }
+        _numa_blocks.erase(oldest);
+    }
+    _numa_blocks_checked.store(candidates.size(), std::memory_order_relaxed);
+    _numa_passes.fetch_add(1, std::memory_order_relaxed);
+}
+
+auto Consumer::numa_json() const -> std::string {
+    auto const &topo = numa::topology();
+    auto const  list = [](auto const &values, auto const &format) {
+        std::string out = "[";
+        for (size_t i = 0; i < values.size(); ++i) {
+            out += (i > 0 ? ", " : "") + format(values[i]);
+        }
+        return out + "]";
+    };
+    auto const  seconds = [](double v) { return fmt::format("{:.3f}", v); };
+    auto const  count   = [](uint32_t v) { return std::to_string(v); };
+    auto const  quoted  = [](std::string const &v) { return "\"" + v + "\""; };
+    std::string out     = fmt::format(R"({{"nodes": {}, "node_cpus": {}, "passes": {}, "busy_s_by_node": {}, "blocks": [)", topo.nodes,
+                                      list(topo.cpus, quoted), _numa_passes.load(std::memory_order_relaxed), list(_numa_busy_s, seconds));
+    bool        first   = true;
+    for (auto const &[address, block] : _numa_blocks) {
+        out += fmt::format(R"({}{{"zone": "{}", "thread": {}, "address": "0x{:x}", "bytes": {}, "t_ms": {:.3f}, "freed": {}, )"
+                           R"("busy_s_by_node": {}, "placements": [)",
+                           first ? "" : ", ", detail::json_escape(block.name_id != 0 ? _strings.get(block.name_id) : std::string{}),
+                           block.thread_id, address, block.bytes, block.t_ms, block.freed, list(block.busy_s, seconds));
+        for (size_t i = 0; i < block.placements.size(); ++i) {
+            auto const &p = block.placements[i];
+            out += fmt::format(R"({}{{"t_ms": {:.3f}, "pages": {}, "untouched": {}, "sampled": {}, "huge_pct": {:.1f}}})",
+                               i > 0 ? ", " : "", p.t_ms, list(p.pages, count), p.untouched, p.sampled, p.huge_pct);
+        }
+        out += "]}";
+        first = false;
+    }
+    out += R"(], "migrations": [)";
+    first = true;
+    for (auto const &[key, times] : _numa_migrations) {
+        out += fmt::format(R"({}{{"zone": "{}", "thread": {}, "count": {}}})", first ? "" : ", ", detail::json_escape(key.first),
+                           key.second, times);
+        first = false;
+    }
+    return out + "]}";
 }
 
 auto Consumer::dropped_count() const -> uint64_t {
@@ -584,6 +780,9 @@ void Consumer::consumer_loop() {
             if (tick) {
                 tick();
             }
+            // The numa source's pass, as often: placement moves slowly, and a pass costs a read of
+            // every thread's stat and of the process's smaps.
+            numa_pass();
         }
         // Nap until notified (by a filling ring, flush() or shutdown()) or the nap ends.
         std::unique_lock lock(_wake_mutex);
@@ -622,7 +821,8 @@ size_t Consumer::drain_all() {
         run_sampler(regs.size());
     }
     for (auto &reg : regs) {
-        if (sampling && reg.kernel_thread != 0) {
+        // Which recording thread a kernel thread is: for samples, and the numa source's thread nodes.
+        if (reg.kernel_thread != 0) {
             _thread_of_kernel[reg.kernel_thread] = reg.thread_id;
         }
         if (!_waiting_samples.empty()) {

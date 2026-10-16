@@ -37,7 +37,8 @@ auto source_requested(Settings const &settings, std::string_view name) -> bool {
 }
 
 auto source_statuses() -> std::vector<SourceStatus> {
-    return {counters::status(), energy::status(), ompt::status(), roofline::status(), sampling::status(), signposts::status()};
+    return {counters::status(), energy::status(),   numa::status(),     ompt::status(),
+            roofline::status(), sampling::status(), signposts::status()};
 }
 
 namespace {
@@ -156,6 +157,34 @@ auto status() -> SourceStatus {
     return status;
 }
 } // namespace energy
+
+namespace numa {
+auto status() -> SourceStatus {
+    SourceStatus status{.name = "numa", .state = "off", .detail = ""};
+    if (collector_inactive() || Profiler::gone() || !source_requested(Profiler::instance().settings(), "numa")) {
+        return status;
+    }
+#ifndef __linux__
+    status.state  = "unavailable";
+    status.detail = "the numa source reads Linux's page placement (move_pages), which this platform does not have";
+    return status;
+#else
+    auto const state = Profiler::instance().consumer()->numa_state();
+    if (state.nodes < 2) {
+        status.state  = "unavailable";
+        status.detail = "this machine has one NUMA node";
+    } else if (state.passes == 0) {
+        status.state  = "waiting";
+        status.detail = "the consumer checks placement every 500 ms; none yet";
+    } else {
+        status.state  = "active";
+        status.detail = fmt::format("{} NUMA nodes; {} block(s) of {} bytes or more checked in the last pass, by move_pages", state.nodes,
+                                    state.blocks, Profiler::instance().settings().numa_min_bytes);
+    }
+    return status;
+#endif
+}
+} // namespace numa
 
 namespace sampling {
 auto status() -> SourceStatus {

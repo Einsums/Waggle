@@ -51,6 +51,7 @@ def add_parser(sub) -> None:
     view = cpu.add_mutually_exclusive_group()
     view.add_argument("--lines", action="store_true", help="with --zone: every source line with samples, and the functions")
     view.add_argument("--asm", action="store_true", help="with --zone: the hottest function's machine code, samples per instruction")
+    view.add_argument("--numa", action="store_true", help="every checked block's NUMA placement over time, and the findings")
     cpu.add_argument("--line", type=int, metavar="N", help="with --asm: the function holding line N, its instructions marked")
     cpu.add_argument("--no-symbols", action="store_true", help="leave addresses unnamed, which is faster")
     cpu.add_argument("--machine-file", help="the machine file to read peaks from (default: WAGGLE_MACHINE_FILE, else ~/.cache/waggle/machine.json)")
@@ -255,6 +256,72 @@ def _machine(session: Session, ext: dict[str, Any] | None, path: str | None) -> 
     return block, entry.get("peak")
 
 
+# ---- NUMA placement ------------------------------------------------------------------------------
+
+#: A block this much on one node is placed there; the first-touch finding wants it at least.
+FIRST_TOUCH_NODE_PCT = 90.0
+#: ...while at least this share of the threads' CPU time ran on other nodes.
+FIRST_TOUCH_OFF_NODE_PCT = 25.0
+#: A block with more than this share of its pages untouched at the end.
+UNTOUCHED_PCT = 50.0
+#: A block this large wants huge pages...
+HUGE_BLOCK_BYTES = 1 << 30
+#: ...and has fewer than this share of them.
+HUGE_PCT = 10.0
+
+
+def _gb(nbytes: int) -> str:
+    return f"{nbytes / 2**30:.1f} GB" if nbytes >= 2**30 else f"{nbytes / 2**20:.0f} MB"
+
+
+def numa_report(ext: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Each checked block as the numa source last saw it, and the findings: first touch, untouched
+    pages, thread migration and missing huge pages, each naming the zone that allocated the block
+    and the numbers behind it. None when the source did not run."""
+    numa = (ext or {}).get("numa")
+    if not isinstance(numa, dict):
+        return None
+    blocks, findings = [], []
+    for block in numa.get("blocks", []):
+        placements = block.get("placements") or []
+        if not placements:
+            continue
+        last = placements[-1]
+        placed = sum(last["pages"])
+        nodes_pct = {str(n): round(100.0 * count / placed, 1) for n, count in enumerate(last["pages"]) if count} if placed else {}
+        busy = block.get("busy_s_by_node") or []
+        main = max(range(len(last["pages"])), key=lambda n: last["pages"][n]) if placed else None
+        off_node = sum(b for n, b in enumerate(busy) if n != main) if main is not None else 0.0
+        off_pct = round(100.0 * off_node / sum(busy), 1) if sum(busy) > 0 else None
+        untouched_pct = round(100.0 * last["untouched"] / last["sampled"], 1) if last["sampled"] else 0.0
+        zone = block.get("zone") or "(no zone)"
+        row = {"zone": zone, "thread": block.get("thread"), "address": block.get("address"), "bytes": block["bytes"],
+               "freed": block.get("freed", False), "nodes_pct": nodes_pct, "untouched_pct": untouched_pct,
+               "threads_off_node_pct": off_pct, "huge_pct": last.get("huge_pct", 0.0),
+               "history": [{"t_ms": p["t_ms"], "pages": p["pages"], "untouched": p["untouched"]} for p in placements]}  # fmt: skip
+        blocks.append(row)
+        what = f"{zone} allocated {_gb(block['bytes'])}"
+        if main is not None and nodes_pct.get(str(main), 0) >= FIRST_TOUCH_NODE_PCT and off_pct is not None and off_pct >= FIRST_TOUCH_OFF_NODE_PCT:
+            findings.append({"kind": "first_touch", "zone": zone, "address": block.get("address"),
+                             "text": f"{what}, {nodes_pct[str(main)]:.0f}% on node {main}, while {off_pct:.0f}% of the threads' CPU time "
+                                     f"ran on other nodes: initialize it in parallel with the compute's schedule, or interleave it "
+                                     f"(numactl --interleave)"})  # fmt: skip
+        if untouched_pct > UNTOUCHED_PCT:
+            findings.append({"kind": "untouched", "zone": zone, "address": block.get("address"),
+                             "text": f"{what}, {untouched_pct:.0f}% of it never touched: it is larger than it needs to be, or used "
+                                     f"later than it is allocated"})  # fmt: skip
+        if block["bytes"] >= HUGE_BLOCK_BYTES and last.get("huge_pct", 0.0) < HUGE_PCT:
+            findings.append({"kind": "no_huge_pages", "zone": zone, "address": block.get("address"),
+                             "text": f"{what}, {last.get('huge_pct', 0.0):.0f}% in huge pages: enable transparent huge pages for it "
+                                     f"(madvise MADV_HUGEPAGE), to cut TLB misses"})  # fmt: skip
+    for move in numa.get("migrations", []):
+        findings.append({"kind": "thread_migration", "zone": move["zone"], "thread": move["thread"],
+                         "text": f"{move['zone']}: its thread ran on another node with the zone open ({move['count']} time(s)): bind "
+                                 f"threads, for example OMP_PROC_BIND=close with OMP_PLACES=cores"})  # fmt: skip
+    return {"nodes": numa.get("nodes"), "node_cpus": numa.get("node_cpus"), "passes": numa.get("passes"),
+            "blocks": sorted(blocks, key=lambda b: -b["bytes"]), "findings": findings}  # fmt: skip
+
+
 def summary(session: Session, *, symbols: bool = True, machine_file: str | None = None) -> dict[str, Any]:
     """The summary of @p session's CPU sources: every zone with samples, most first, with its hot
     lines, then any other zone the roofline source counted; each with its FLOPs and bytes."""
@@ -266,9 +333,11 @@ def summary(session: Session, *, symbols: bool = True, machine_file: str | None 
         profile = {n.name: n for n in aggregate_flat([c for t in session.snapshot.threads.values() for c in t.children])}
     inclusive = _inclusive_totals(session)
     counted = {name: _roofline(ms, counters) for name, (ms, counters) in inclusive.items() if _roofline(ms, counters)}
-    if ext is None and not counted:
+    numa = numa_report(recorded)
+    if ext is None and not counted and numa is None:
         raise SystemExit(
-            f"session {session.label!r} has no CPU data: record it with WAGGLE_SOURCES=sampling (or roofline) and WAGGLE_SAVE=FILE"
+            f"session {session.label!r} has no CPU data: record it with WAGGLE_SOURCES=sampling (or roofline, or numa) and "
+            "WAGGLE_SAVE=FILE"
         )
 
     zones = _by_zone(ext) if ext else {NO_ZONE: Counter()}
@@ -280,6 +349,9 @@ def summary(session: Session, *, symbols: bool = True, machine_file: str | None 
 
     sampled = [name for name, counts in sorted(zones.items(), key=lambda item: (-sum(item[1].values()), item[0])) if counts]
     others = sorted((n for n in counted if n not in zones or not zones[n]), key=lambda n: -inclusive[n][0])
+    # Zones that allocated a checked block, after the rest.
+    allocating = list(dict.fromkeys(b["zone"] for b in (numa or {}).get("blocks", [])))
+    others += [n for n in allocating if n not in sampled and n not in others]
     rows = []
     for name in sampled + others:
         counts = zones.get(name, Counter())
@@ -300,12 +372,21 @@ def summary(session: Session, *, symbols: bool = True, machine_file: str | None 
             if callers.get(name):
                 zone["caller_lines"] = caller_lines(callers[name], samples, result, SUMMARY_TOP)
             zone["hot_functions"] = hot_functions(counts, result, SUMMARY_TOP)
+        if numa is not None:
+            mine = [b for b in numa["blocks"] if b["zone"] == name]
+            if mine:
+                zone["numa"] = [{"block_gb": round(b["bytes"] / 2**30, 3), "nodes_pct": b["nodes_pct"],
+                                 "threads_off_node_pct": b["threads_off_node_pct"], "huge_pct": b["huge_pct"]} for b in mine]  # fmt: skip
+            if found := [f["text"] for f in numa["findings"] if f["zone"] == name]:
+                zone["findings"] = found
         rows.append(zone)
     data: dict[str, Any] = {"schema": SCHEMA, "machine": machine_block, "sampling": ext["sampling"] if ext else None, "zones": rows}
     if ext is not None:
         data["no_zone"] = {"samples": sum(no_zone.values()), "samples_pct": _pct(sum(no_zone.values()), total)}
     if symbols and ext is not None:
         data["symbols"] = _symbols_note(result)
+    if numa is not None:
+        data["numa"] = {"nodes": numa["nodes"], "findings": [f["text"] for f in numa["findings"]]}
     return data
 
 
@@ -490,6 +571,8 @@ def _text_summary(data: dict[str, Any], top: int) -> str:
                 lines.append(f"{'':>44}{', '.join(notes)}")
         for hot in z.get("hot_lines", [])[:3]:
             lines.append(f"{'':>44}{hot['samples_pct']:>5.1f}%  {_location(hot)}  {hot['function']}")
+        for finding in z.get("findings", []):
+            lines.append(f"{'':>44}! {finding}")
         for call in z.get("caller_lines", [])[:2]:
             lines.append(f"{'':>44}{call['samples_pct']:>5.1f}%  {_location(call)}  calls {call['callee']}")
     if nz := data.get("no_zone"):
@@ -538,6 +621,17 @@ def _text_asm(data: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _text_numa(data: dict[str, Any]) -> str:
+    lines = [f"{data['nodes']} NUMA nodes, {data['passes']} passes", "", f"{'size':>9}  {'off-node CPU':>12}  {'huge':>5}  nodes  zone"]
+    for b in data["blocks"]:
+        nodes = ", ".join(f"{n}: {pct:.0f}%" for n, pct in b["nodes_pct"].items()) or "untouched"
+        off = "" if b["threads_off_node_pct"] is None else f"{b['threads_off_node_pct']:.0f}%"
+        lines.append(f"{_gb(b['bytes']):>9}  {off:>12}  {b['huge_pct']:>4.0f}%  {nodes}  {b['zone']}{'  (freed)' if b['freed'] else ''}")
+    if data["findings"]:
+        lines += ["", "Findings:"] + [f"  {f['text']}" for f in data["findings"]]
+    return "\n".join(lines)
+
+
 def run(args: argparse.Namespace) -> int:
     from .report import _load, _pick
 
@@ -546,6 +640,12 @@ def run(args: argparse.Namespace) -> int:
     if args.line is not None and not args.asm:
         raise SystemExit("--line goes with --asm")
     session = _pick(_load(args.file), args.session)
+    if args.numa:
+        data = numa_report(session.extensions.get("cpu") if isinstance(session.extensions.get("cpu"), dict) else None)
+        if data is None:
+            raise SystemExit(f"session {session.label!r} has no NUMA placement: record it with WAGGLE_SOURCES=numa and WAGGLE_SAVE=FILE")
+        print(json.dumps(data, indent=2) if args.format == "json" else _text_numa(data))
+        return 0
     if args.asm:
         data = zone_asm(session, args.zone, args.line)
         text = _text_asm(data)

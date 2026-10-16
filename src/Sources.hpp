@@ -41,6 +41,12 @@ WAGGLE_EXPORT auto status() -> SourceStatus;
 WAGGLE_EXPORT void note_thread(bool opened);
 } // namespace counters
 
+namespace numa {
+/// The numa source: which NUMA node each large block's pages are on, set against the nodes the
+/// program's threads run on, checked by the consumer at most every 500 ms.
+WAGGLE_EXPORT auto status() -> SourceStatus;
+} // namespace numa
+
 namespace roofline {
 /// The roofline source: each zone's FLOPs and an estimate of its DRAM bytes, from hardware
 /// counters read with the zone's, which it shares with the counters source.

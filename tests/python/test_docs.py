@@ -28,6 +28,6 @@ def test_the_sources_guide_covers_every_source():
     # A source's status names it, directly or through the helper the per-thread sources share.
     sources = set(re.findall(r'\.name = "([a-z]+)"', code)) | set(re.findall(r'thread_source_status\("([a-z]+)"', code))
     page = (ROOT / "docs" / "guides" / "sources.rst").read_text()
-    assert {"counters", "energy", "openmp", "roofline", "sampling", "signposts"} <= sources
+    assert {"counters", "energy", "numa", "openmp", "roofline", "sampling", "signposts"} <= sources
     missing = [s for s in sorted(sources) if f"\n{s}\n===" not in page]
     assert missing == [], f"docs/guides/sources.rst has no section for {missing}"

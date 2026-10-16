@@ -917,8 +917,10 @@ void Server::export_session(std::string const &path, std::string const &label,
 
 void Server::write_session(Consumer &consumer, RequestHandlers const &handlers, std::string const &path, std::string const &label,
                            std::vector<std::pair<std::string, std::string>> const &extra_json, uint64_t seq) {
-    // Flush all pending events from ring buffers into the AggNode tree.
+    // Flush all pending events from ring buffers into the AggNode tree, and check placement once
+    // more, so the file has the blocks as they are now.
     consumer.flush();
+    consumer.numa_pass();
 
     auto        lock       = consumer.lock_shared();
     auto const &thread_map = consumer.thread_data();
@@ -1001,10 +1003,7 @@ void Server::write_session(Consumer &consumer, RequestHandlers const &handlers, 
     }
     // The collector's own: the sampling source's samples, by zone and address, and the machine the
     // roofline source's counts are measured against.
-    std::string cpu = consumer.cpu_json();
-    if (cpu.empty() && roofline::status().state == "active") {
-        cpu = R"({"schema": "waggle.cpu/1", "machine": )" + sampling::machine_json() + "}";
-    }
+    std::string const cpu = consumer.cpu_json(roofline::status().state == "active");
     if (!cpu.empty()) {
         json += std::string(first_section ? "" : ",") + "\n    \"cpu\": " + cpu;
         first_section = false;
