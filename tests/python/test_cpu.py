@@ -248,3 +248,74 @@ def test_flat_zones_sum_their_counters_over_threads():
     b = parse_node({"name": "z", "call_count": 1, "counters": {"cycles": {"total": 30, "min": 2, "max": 9}}})
     merged = aggregate_flat([a, b])[0]
     assert merged.counters["cycles"] == {"total": 40, "min": 2, "max": 9}
+
+
+PEAK = {"fp64_gflops": 1000.0, "fp32_gflops": 2000.0, "fp64_gflops_per_core": 50.0, "fp32_gflops_per_core": 100.0,
+        "dram_gbs": 200.0, "dram_gbs_per_socket": [100.0, 100.0]}  # fmt: skip
+
+
+def _machine_file(tmp_path, **entry):
+    from waggle import machine
+
+    base = {"host": "node-1", "cpu": "Test CPU", "sockets": 2, "cpus": 20, "threads": 20, "complete": True,
+            "calibrated": "2026-10-16T00:00:00+00:00", "peak": PEAK}  # fmt: skip
+    return str(machine.save({**base, **entry}, tmp_path / "machine.json"))
+
+
+def test_a_calibrated_machine_gives_each_zone_its_efficiencies(tmp_path):
+    zone = _counted("contract", 1000.0, 20_000_000_000, 1_000_000_000)
+    # The work needs 10 GFLOP and 500 MB: 10 ms at the 1000 GFLOP/s peak, 2.5 ms at 200 GB/s.
+    zone["annotations"] = {"work.flops": {"avg": 1e10, "min": 1e10, "max": 1e10}, "work.bytes": {"avg": 5e8, "min": 5e8, "max": 5e8}}
+    session = {"format": "waggle-session", "version": 1, "label": "eff", "threads": {"1": {"name": "main", "children": [zone]}},
+               "extensions": {"cpu": {"schema": "waggle.cpu/1", "machine": {"host": "node-1", "cpu": "Test CPU", "sockets": 2, "cpus": 20}}}}  # fmt: skip
+    data = cpu.summary(session_from_dict(session, "s0"), machine_file=_machine_file(tmp_path))
+    assert data["machine"]["peak"] == PEAK and "note" not in data["machine"]
+    z = data["zones"][0]
+    assert z["compute"]["peak_pct"] == 40.0  # 20 GFLOP/s against 50 per core
+    assert z["compute"]["redundant_flops"] == 2.0  # counted twice what the work needs
+    assert z["memory"]["byte_efficiency"] == 0.5  # moved twice the bytes it needs
+    assert z["bound"] == "compute" and z["gap_to_ideal"] == 100.0  # 1 s against 10 ms
+
+
+def test_a_zone_without_work_hints_is_not_said_to_be_bound(tmp_path):
+    session = {"format": "waggle-session", "version": 1, "label": "plain",
+               "threads": {"1": {"name": "main", "children": [_counted("loop", 1000.0, 1_000, 1_000)]}},
+               "extensions": {"cpu": {"schema": "waggle.cpu/1", "machine": {"host": "node-1", "cpu": "Test CPU", "sockets": 2, "cpus": 20}}}}  # fmt: skip
+    z = cpu.summary(session_from_dict(session, "s0"), machine_file=_machine_file(tmp_path))["zones"][0]
+    assert "peak_pct" in z["compute"] and "bound" not in z and "gap_to_ideal" not in z
+
+
+def test_a_machine_is_found_by_host_else_by_a_node_like_it(tmp_path):
+    from waggle import machine
+
+    path = _machine_file(tmp_path, host="node-7")
+    found = machine.find({"host": "node-9", "cpu": "Test CPU", "sockets": 2}, path)
+    assert found is not None and found["host"] == "node-7"
+    assert machine.find({"host": "node-9", "cpu": "Other CPU", "sockets": 2}, path) is None
+    machine.save({"host": "node-9", "cpu": "Test CPU", "sockets": 2, "peak": {}}, path)
+    assert machine.find({"host": "node-9", "cpu": "Test CPU", "sockets": 2}, path)["host"] == "node-9"
+    assert len(machine.load(path)) == 2  # one entry per host and CPU
+
+
+def test_an_uncalibrated_machine_says_how_to_calibrate_it(tmp_path):
+    session = {"format": "waggle-session", "version": 1, "label": "plain",
+               "threads": {"1": {"name": "main", "children": [_counted("loop", 1000.0, 1_000, 1_000)]}},
+               "extensions": {"cpu": {"schema": "waggle.cpu/1", "machine": {"host": "x", "cpu": "Unseen CPU", "sockets": 1, "cpus": 4}}}}  # fmt: skip
+    data = cpu.summary(session_from_dict(session, "s0"), machine_file=str(tmp_path / "none.json"))
+    assert data["machine"]["peak"] is None and "waggle calibrate" in data["machine"]["note"]
+    assert "peak_pct" not in data["zones"][0]["compute"]
+
+
+def test_calibrate_measures_this_machine_on_a_few_cores(tmp_path):
+    from waggle import calibrate, machine
+
+    if calibrate.find_program() is None:
+        pytest.skip("waggle-calibrate is not built here")
+    path = tmp_path / "machine.json"
+    assert main(["calibrate", "--threads", "2", "--seconds", "0.2", "--stream-mb", "32", "--file", str(path)]) == 0
+    (entry,) = machine.load(path)
+    peak = entry["peak"]
+    assert entry["threads"] == min(2, entry["cpus"]) and entry["complete"] == (entry["cpus"] <= 2)
+    assert peak["fp64_gflops_per_core"] > 0.5
+    assert 1.5 < peak["fp32_gflops"] / peak["fp64_gflops"] < 2.5  # twice the lanes
+    assert peak["dram_gbs"] > 0.1 and len(peak["dram_gbs_per_socket"]) >= 1

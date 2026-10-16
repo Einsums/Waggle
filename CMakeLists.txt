@@ -243,6 +243,24 @@ if(WAGGLE_BUILD_TESTS)
   add_subdirectory(tests)
 endif()
 
+# ── waggle-calibrate ─────────────────────────────────────────────────────────
+# Measures the machine's FLOP and bandwidth peaks for the roofline source; `waggle calibrate` runs
+# it and keeps the result. It stands apart from the collector, which never runs it. Built beside
+# the staged Python package when there is one, which finds it there.
+if(NOT MSVC)
+  add_executable(waggle_calibrate tools/waggle-calibrate.cpp)
+  target_compile_features(waggle_calibrate PRIVATE cxx_std_20)
+  target_link_libraries(waggle_calibrate PRIVATE Threads::Threads)
+  set_target_properties(waggle_calibrate PROPERTIES OUTPUT_NAME waggle-calibrate)
+  if(_waggle_python_dir)
+    set_target_properties(waggle_calibrate PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${_waggle_python_dir}/waggle)
+  endif()
+  install(TARGETS waggle_calibrate RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+  if(WAGGLE_PYTHON_INSTALL_DIR)
+    install(TARGETS waggle_calibrate RUNTIME DESTINATION ${WAGGLE_PYTHON_INSTALL_DIR}/waggle)
+  endif()
+endif()
+
 # ── Install ──────────────────────────────────────────────────────────────────
 install(
   TARGETS waggle

@@ -51,9 +51,10 @@ def add_parsers(sub) -> None:
     diff.add_argument("--min-ms", type=float, default=1.0, help="ignore zones below this in A for --fail-above (default: 1)")
     diff.set_defaults(action=diff_sessions)
 
-    from . import cpu
+    from . import calibrate, cpu
 
     cpu.add_parser(sub)
+    calibrate.add_parser(sub)
 
 
 def _load(path: str) -> list[Session]:

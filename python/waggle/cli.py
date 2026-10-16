@@ -16,7 +16,7 @@ from collections.abc import Sequence
 from .client import DEFAULT_HOST, DEFAULT_PORT, parse_endpoint
 
 #: Subcommands that work on saved sessions without the viewer.
-ACTIONS = ("report", "diff", "cpu")
+ACTIONS = ("report", "diff", "cpu", "calibrate")
 
 
 def viewer_parser(prog: str, server_hint: str = "WAGGLE_SERVER=1") -> argparse.ArgumentParser:

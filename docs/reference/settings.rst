@@ -87,4 +87,6 @@ Booleans accept ``1``, ``true``, ``on``, ``yes`` and ``0``, ``false``, ``off``, 
 Not settings
 ============
 
+``WAGGLE_MACHINE_FILE`` names the machine file ``waggle calibrate`` writes and ``waggle cpu`` reads (default ``~/.cache/waggle/machine.json``), and ``WAGGLE_CALIBRATE`` the ``waggle-calibrate`` program when it is not beside the ``waggle`` package or on the path; the collector reads neither.
+
 ``WAGGLE_DISABLE`` and ``WAGGLE_DETAIL`` are also *preprocessor* macros: defined before ``<Waggle/Waggle.hpp>``, the first compiles a translation unit's zones out and the second compiles its ``WAGGLE_ZONE_DETAIL`` zones in.

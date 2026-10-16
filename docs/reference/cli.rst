@@ -6,7 +6,7 @@
 Command line
 ============
 
-``waggle`` opens the viewer; ``waggle report``, ``waggle diff`` and ``waggle cpu`` read saved sessions without it.
+``waggle`` opens the viewer; ``waggle report``, ``waggle diff`` and ``waggle cpu`` read saved sessions without it, and ``waggle calibrate`` measures the machine for ``waggle cpu``.
 ``python -m waggle`` is the same command.
 
 waggle
@@ -28,3 +28,8 @@ waggle cpu
 ==========
 
 .. waggle-cli:: cpu
+
+waggle calibrate
+================
+
+.. waggle-cli:: calibrate

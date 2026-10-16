@@ -22,8 +22,8 @@ import subprocess
 from collections import Counter
 from typing import Any
 
-from . import elf
-from .analysis import aggregate_flat
+from . import elf, machine
+from .analysis import aggregate_flat, numeric_annotation
 from .session import Session
 from .symbolize import Location, Result, symbolize
 
@@ -53,6 +53,7 @@ def add_parser(sub) -> None:
     view.add_argument("--asm", action="store_true", help="with --zone: the hottest function's machine code, samples per instruction")
     cpu.add_argument("--line", type=int, metavar="N", help="with --asm: the function holding line N, its instructions marked")
     cpu.add_argument("--no-symbols", action="store_true", help="leave addresses unnamed, which is faster")
+    cpu.add_argument("--machine-file", help="the machine file to read peaks from (default: WAGGLE_MACHINE_FILE, else ~/.cache/waggle/machine.json)")
     cpu.add_argument("--top", type=int, default=20, help="rows to show (default: 20; 0 for all)")
     cpu.add_argument("--format", choices=("text", "json"), default="text")
     cpu.set_defaults(action=run)
@@ -184,6 +185,10 @@ def _inclusive_totals(session: Session) -> dict[str, tuple[float, dict[str, int]
                 for name in _ROOFLINE_COUNTERS:
                     if isinstance(value := (node.counters or {}).get(name), dict):
                         counters[name] = counters.get(name, 0) + int(value.get("total", 0))
+                # Work hints are per call: each call's, times the calls.
+                for hint in ("work.flops", "work.bytes"):
+                    if (per_call := numeric_annotation(node.annotations or {}, hint)) is not None:
+                        counters[hint] = counters.get(hint, 0) + int(per_call * node.call_count)
                 totals[node.name] = (ms + node.inclusive_ms, counters)
             pending += [(child, above | {node.name}) for child in node.children]
     return totals
@@ -207,17 +212,60 @@ def _roofline(inclusive_ms: float, counters: dict[str, int]) -> dict[str, Any]:
     return out
 
 
-def summary(session: Session, *, symbols: bool = True) -> dict[str, Any]:
+def _efficiency(zone: dict[str, Any], inclusive_ms: float, counters: dict[str, int], peak: dict[str, Any]) -> None:
+    """Add to @p zone what its counts and work hints mean against the machine's @p peak. A zone's
+    counters are its own thread's, so its FLOP rate is per second of thread time, against one core's
+    peak; its work hints are the whole operation's, against the whole machine's."""
+    compute, memory = zone.get("compute"), zone.get("memory")
+    precision = compute["precision"] if compute else "fp64"
+    if compute and compute.get("gflops") is not None and peak.get(f"{precision}_gflops_per_core"):
+        compute["peak_pct"] = round(100.0 * compute["gflops"] / peak[f"{precision}_gflops_per_core"], 1)
+    work_flops, work_bytes = counters.get("work.flops"), counters.get("work.bytes")
+    if work_flops and compute:
+        compute["redundant_flops"] = round(compute["flops"] / work_flops, 3)
+    if work_bytes and memory and memory["bytes"]:
+        memory["byte_efficiency"] = round(work_bytes / memory["bytes"], 3)
+    flop_s = (work_flops or 0) / (peak.get(f"{precision}_gflops", 0) * 1e9) if peak.get(f"{precision}_gflops") else 0.0
+    byte_s = (work_bytes or 0) / (peak.get("dram_gbs", 0) * 1e9) if peak.get("dram_gbs") else 0.0
+    if work_flops or work_bytes:
+        if max(flop_s, byte_s) > 0:
+            zone["gap_to_ideal"] = round(inclusive_ms / 1e3 / max(flop_s, byte_s), 2)
+        # Which roof the work itself meets first. Without hints a zone's own counts cannot say: one
+        # that does little of either sits under both roofs, bound by neither.
+        zone["bound"] = "compute" if flop_s >= byte_s else "memory"
+
+
+def _machine(session: Session, ext: dict[str, Any] | None, path: str | None) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """The summary's machine block, and the peaks to measure against, when it was calibrated."""
+    recorded = (ext or {}).get("machine")
+    if not isinstance(recorded, dict) or not recorded:
+        return None, None
+    block = dict(recorded)
+    entry = machine.find(recorded, path)
+    if entry is None:
+        block["peak"] = None
+        block["note"] = "not calibrated: run waggle calibrate on this machine, or one like it, with the machine to itself"
+        return block, None
+    block["peak"] = entry.get("peak")
+    block["calibrated"] = entry.get("calibrated")
+    if entry.get("host") != recorded.get("host"):
+        block["calibrated_on"] = entry.get("host")
+    if not entry.get("complete", True):
+        block["note"] = f"calibrated with {entry.get('threads')} of {entry.get('cpus')} CPUs: the totals are low"
+    return block, entry.get("peak")
+
+
+def summary(session: Session, *, symbols: bool = True, machine_file: str | None = None) -> dict[str, Any]:
     """The summary of @p session's CPU sources: every zone with samples, most first, with its hot
     lines, then any other zone the roofline source counted; each with its FLOPs and bytes."""
-    ext = session.extensions.get("cpu")
-    if not isinstance(ext, dict) or "sampling" not in ext:
-        ext = None
+    recorded = session.extensions.get("cpu") if isinstance(session.extensions.get("cpu"), dict) else None
+    ext = recorded if recorded is not None and "sampling" in recorded else None
+    machine_block, peak = _machine(session, recorded, machine_file)
     profile = {}
     if session.snapshot is not None:
         profile = {n.name: n for n in aggregate_flat([c for t in session.snapshot.threads.values() for c in t.children])}
     inclusive = _inclusive_totals(session)
-    counted = {name: _roofline(ms, counters) for name, (ms, counters) in inclusive.items() if counters}
+    counted = {name: _roofline(ms, counters) for name, (ms, counters) in inclusive.items() if _roofline(ms, counters)}
     if ext is None and not counted:
         raise SystemExit(
             f"session {session.label!r} has no CPU data: record it with WAGGLE_SOURCES=sampling (or roofline) and WAGGLE_SAVE=FILE"
@@ -241,6 +289,8 @@ def summary(session: Session, *, symbols: bool = True) -> dict[str, Any]:
             zone["calls"] = node.call_count
             zone["time_ms"] = {"exclusive": round(node.exclusive_ms, 3), "inclusive": round(inclusive[name][0], 3)}
             zone.update(counted.get(name, {}))
+            if peak and name in inclusive:
+                _efficiency(zone, *inclusive[name], peak)
         if ext is not None:
             zone["samples"] = samples
             zone["samples_pct"] = _pct(samples, total)
@@ -251,7 +301,7 @@ def summary(session: Session, *, symbols: bool = True) -> dict[str, Any]:
                 zone["caller_lines"] = caller_lines(callers[name], samples, result, SUMMARY_TOP)
             zone["hot_functions"] = hot_functions(counts, result, SUMMARY_TOP)
         rows.append(zone)
-    data: dict[str, Any] = {"schema": SCHEMA, "sampling": ext["sampling"] if ext else None, "zones": rows}
+    data: dict[str, Any] = {"schema": SCHEMA, "machine": machine_block, "sampling": ext["sampling"] if ext else None, "zones": rows}
     if ext is not None:
         data["no_zone"] = {"samples": sum(no_zone.values()), "samples_pct": _pct(sum(no_zone.values()), total)}
     if symbols and ext is not None:
@@ -401,6 +451,14 @@ def _text_summary(data: dict[str, Any], top: int) -> str:
     s = data["sampling"]
     zones = data["zones"][:top] if top else data["zones"]
     lines = []
+    if (m := data.get("machine")) is not None:
+        if m.get("peak"):
+            p = m["peak"]
+            where = f", calibrated on {m['calibrated_on']}" if m.get("calibrated_on") else ""
+            lines.append(f"{m['cpu']}: peaks {p['fp64_gflops']:.0f} GFLOP/s FP64, {p['dram_gbs']:.0f} GB/s DRAM{where}")
+        if m.get("note"):
+            lines.append(f"  {m['note']}")
+        lines.append("")
     if s:
         lines += [f"{s['event']} sampled at {s['rate_hz']} Hz on {s['threads']} thread(s): {s['samples']} samples, {s['lost']} lost", ""]
     lines.append(f"{'samples %':>9}  {'samples':>8}  {'excl ms':>10}  {'calls':>8}  zone")
@@ -419,6 +477,17 @@ def _text_summary(data: dict[str, Any], top: int) -> str:
             if "intensity" in z:
                 text += f"    {z['intensity']} FLOP/byte"
             lines.append(f"{'':>44}{text}")
+            notes = []
+            if "peak_pct" in compute:
+                notes.append(f"{compute['peak_pct']}% of a core's peak")
+            if "redundant_flops" in compute:
+                notes.append(f"{compute['redundant_flops']}x the FLOPs its work needs")
+            if "byte_efficiency" in memory:
+                notes.append(f"byte efficiency {memory['byte_efficiency']}")
+            if "gap_to_ideal" in z:
+                notes.append(f"{z['gap_to_ideal']}x its ideal time ({z['bound']} bound)")
+            if notes:
+                lines.append(f"{'':>44}{', '.join(notes)}")
         for hot in z.get("hot_lines", [])[:3]:
             lines.append(f"{'':>44}{hot['samples_pct']:>5.1f}%  {_location(hot)}  {hot['function']}")
         for call in z.get("caller_lines", [])[:2]:
@@ -487,7 +556,7 @@ def run(args: argparse.Namespace) -> int:
         data = zone_addresses(session, args.zone, symbols=not args.no_symbols)
         text = _text_addresses(data, args.top)
     else:
-        data = summary(session, symbols=not args.no_symbols)
+        data = summary(session, symbols=not args.no_symbols, machine_file=args.machine_file)
         text = _text_summary(data, args.top)
     print(json.dumps(data, indent=2) if args.format == "json" else text)
     return 0

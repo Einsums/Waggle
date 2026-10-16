@@ -288,6 +288,30 @@ auto CodeIndex::has_lines(uint64_t address) -> bool {
     return range != nullptr && range->lines;
 }
 
+auto machine_json() -> std::string {
+    std::string   model = "unknown";
+    std::ifstream cpuinfo("/proc/cpuinfo");
+    for (std::string line; std::getline(cpuinfo, line);) {
+        if (line.rfind("model name", 0) == 0 && line.find(':') != std::string::npos) {
+            model = line.substr(std::min(line.size(), line.find(':') + 2));
+            break;
+        }
+    }
+    std::unordered_set<std::string> sockets;
+    long const                      online = sysconf(_SC_NPROCESSORS_CONF);
+    for (long cpu = 0; cpu < online; ++cpu) {
+        std::string   id;
+        std::ifstream in(fmt::format("/sys/devices/system/cpu/cpu{}/topology/physical_package_id", cpu));
+        if (in >> id) {
+            sockets.insert(id);
+        }
+    }
+    char host[256] = {}; // NOLINT(modernize-avoid-c-arrays)
+    gethostname(host, sizeof(host) - 1);
+    return fmt::format(R"({{"host": "{}", "cpu": "{}", "sockets": {}, "cpus": {}}})", detail::json_escape(host), detail::json_escape(model),
+                       std::max<size_t>(1, sockets.size()), online);
+}
+
 auto module_map_json() -> std::string {
     std::vector<Module> modules;
     dl_iterate_phdr(&add_module, &modules);
@@ -535,6 +559,10 @@ void CodeIndex::list_modules() {
 
 auto module_map_json() -> std::string {
     return "[]";
+}
+
+auto machine_json() -> std::string {
+    return "{}";
 }
 
 struct Sampler::Ring {};

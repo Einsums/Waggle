@@ -54,9 +54,16 @@ Each session holds:
     The allocation track and device work, as in the stream.
 ``extensions``
     What libraries added, each under its own namespaced key (``einsums.compute_graphs``), and the collector's own:
-    ``cpu``, with the ``sampling`` source: ``schema`` (``"waggle.cpu/1"``), ``sampling`` (``event``, ``rate_hz``, ``callchain``, ``threads``, ``samples``, ``lost``), ``modules``, each loaded file's ``path``, ``build_id`` (hexadecimal, empty when it has none, and then its ``size`` and ``mtime_ns`` instead), load ``base`` and executable address ``ranges``, ``zones``, each with its ``thread``, its ``path`` of zone names from the thread's root, its ``samples``, its ``addresses`` (hexadecimal address to samples, most first) and, with call chains, its ``callers``: ``[caller, callee, samples]`` for samples in code without line information, the caller the innermost frame in code with it and the callee the frame just inside that call, both addresses within their instructions, and ``no_zone``, the samples taken outside every zone, in the same form.
+    ``cpu``, with the ``sampling`` or ``roofline`` source: ``schema`` (``"waggle.cpu/1"``), ``machine`` (``host``, ``cpu`` model, ``sockets``, ``cpus``: the machine file's key), and with sampling ``sampling`` (``event``, ``rate_hz``, ``callchain``, ``threads``, ``samples``, ``lost``), ``modules``, each loaded file's ``path``, ``build_id`` (hexadecimal, empty when it has none, and then its ``size`` and ``mtime_ns`` instead), load ``base`` and executable address ``ranges``, ``zones``, each with its ``thread``, its ``path`` of zone names from the thread's root, its ``samples``, its ``addresses`` (hexadecimal address to samples, most first) and, with call chains, its ``callers``: ``[caller, callee, samples]`` for samples in code without line information, the caller the innermost frame in code with it and the callee the frame just inside that call, both addresses within their instructions, and ``no_zone``, the samples taken outside every zone, in the same form.
 
 The viewer's own saves nest the trees under ``snapshot`` and add ``bookmarks`` and ``node_history``; both shapes load.
+
+The machine file
+================
+
+``waggle calibrate`` keeps each machine's measured peaks in the machine file (``WAGGLE_MACHINE_FILE``, else ``~/.cache/waggle/machine.json``), and a library's own calibration may write it too: ``{"schema": "waggle.machine/1", "machines": [...]}``, one entry per ``host`` and ``cpu`` model, each with ``sockets``, ``cpus``, ``threads`` (those measured with), ``complete`` (whether that was every CPU), ``calibrated`` (an ISO 8601 time) and ``peak``: ``fp64_gflops`` and ``fp32_gflops`` for the whole machine, ``fp64_gflops_per_core`` and ``fp32_gflops_per_core``, ``dram_gbs`` and ``dram_gbs_per_socket`` (a list).
+A writer replaces the entry for its host and CPU and keeps the rest.
+``waggle cpu`` takes a session's own machine, or else the latest entry for the same CPU and socket count, as a cluster's nodes are alike.
 
 Traces
 ======

@@ -98,6 +98,10 @@ struct ClockPair {
 /// zone's edge, where the process's anchor, seconds or hours away, would not.
 WAGGLE_EXPORT auto monotonic_to_ticks(uint64_t ns, ClockPair const &anchor) -> uint64_t;
 
+/// The machine, as a JSON object for the session file: its ``host``, its ``cpu`` model, and its
+/// ``sockets`` and ``cpus``, which name its entry in the machine file `waggle calibrate` writes.
+WAGGLE_EXPORT auto machine_json() -> std::string;
+
 /// The process's loaded code, as a JSON array for the session file: each module's ``path``, its
 /// GNU ``build_id`` (hexadecimal; empty if it has none, and then the file's ``size`` and
 /// ``mtime_ns`` instead, 0 otherwise), its load ``base`` and the address

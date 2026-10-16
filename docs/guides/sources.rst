@@ -113,6 +113,21 @@ Each zone's floating-point operations and an estimate of the bytes it moved to a
 * **Bytes** are last-level cache misses times 64, per thread: an estimate, exact in whom it credits but low for streaming code, as lines the hardware prefetches are not misses.
   A zone that streams 512 MB counts roughly half of it.
 
+With a calibration, each counted zone also gets what its numbers mean against the machine:
+
+.. code-block:: console
+
+    $ waggle calibrate          # once per kind of machine, in an exclusive job
+    $ waggle cpu run.json
+
+* **Share of peak**: its FLOP rate against one core's measured peak, as a zone's counters are its own thread's: how busy the arithmetic units of the cores it ran on were.
+* With the ``work.flops`` and ``work.bytes`` annotations a library gives an operation (the least FLOPs and DRAM bytes its problem needs, per call), **redundant FLOPs** (counted over needed, above 1 for padding, recomputation or masked lanes), **byte efficiency** (needed over counted bytes, 1 when each operand crossed DRAM once), **gap to ideal** (its time over the larger of its FLOPs at the machine's peak and its bytes at the machine's bandwidth: the most it could speed up) and whether its work is **compute or memory bound**.
+
+``waggle calibrate`` runs ``waggle-calibrate``, built with Waggle, which runs fused multiply-adds at the widest width the CPU has on every core at once, then a STREAM triad on each socket, and keeps the peaks in the machine file.
+Peaks are measured rather than taken from a data sheet, as turbo and wide-vector frequency limits make those wrong by 20% or more; so it needs the machine to itself.
+On a shared login node, ``--threads 2`` checks it works, and the result says it is partial.
+One calibration serves every node with the same CPU.
+
 The source shares each thread's counter group with ``counters``: with both asked for, a zone carries cycles and instructions beside the FLOPs and bytes, and not the counters source's cache and branch misses.
 A group holds cycles, instructions and five more events; where the PMU cannot hold them at once (four general counters per thread with hyper-threading on), it is split in two, which take turns, and the counts are scaled by the time each ran, as ``perf`` does.
 The status then says so, as short zones carry more error.

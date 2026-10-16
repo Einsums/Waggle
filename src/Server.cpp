@@ -999,8 +999,13 @@ void Server::write_session(Consumer &consumer, RequestHandlers const &handlers, 
         json += std::string(first_section ? "" : ",") + "\n    \"" + escape_json_str(key) + "\": " + value;
         first_section = false;
     }
-    // The collector's own: the sampling source's samples, by zone and address.
-    if (auto const cpu = consumer.cpu_json(); !cpu.empty()) {
+    // The collector's own: the sampling source's samples, by zone and address, and the machine the
+    // roofline source's counts are measured against.
+    std::string cpu = consumer.cpu_json();
+    if (cpu.empty() && roofline::status().state == "active") {
+        cpu = R"({"schema": "waggle.cpu/1", "machine": )" + sampling::machine_json() + "}";
+    }
+    if (!cpu.empty()) {
         json += std::string(first_section ? "" : ",") + "\n    \"cpu\": " + cpu;
         first_section = false;
     }

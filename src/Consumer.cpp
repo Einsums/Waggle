@@ -368,9 +368,10 @@ auto Consumer::cpu_json() const -> std::string {
     }
     auto const  state = sampling_state();
     std::string out =
-        fmt::format(R"({{"schema": "waggle.cpu/1", "sampling": {{"event": "{}", "rate_hz": {}, "callchain": {}, "threads": {}, )"
-                    R"("samples": {}, "lost": {}}}, "modules": {}, "zones": [)",
-                    state.event, state.rate_hz, state.callchain, state.threads, state.samples, state.lost, sampling::module_map_json());
+        fmt::format(R"({{"schema": "waggle.cpu/1", "machine": {}, "sampling": {{"event": "{}", "rate_hz": {}, "callchain": {}, )"
+                    R"("threads": {}, "samples": {}, "lost": {}}}, "modules": {}, "zones": [)",
+                    sampling::machine_json(), state.event, state.rate_hz, state.callchain, state.threads, state.samples, state.lost,
+                    sampling::module_map_json());
     bool first = true;
     for (auto const &[thread_id, ts] : _threads) {
         // Each zone with samples, named by its path from the thread's root; an explicit stack, as
