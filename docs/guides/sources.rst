@@ -115,6 +115,9 @@ Together they show what a region's fork costs, how the work divided, and who wai
 A worker's share ends where it reaches the region's closing barrier, so the idle time between regions is not counted as work.
 The primary thread's wait at that barrier is recorded: it is how long the slowest worker kept the region open.
 
+With the sampling source too, a worker's samples stay in its share, and are also counted on the region's zone, apart from its own: ``waggle cpu`` lists the lines its workers spent their time on below the zone's own hot lines, so the zone that started the work sees where it went.
+They are in no zone's share of the samples twice.
+
 The OpenMP runtime must support OMPT: LLVM's libomp does, and serves GCC-compiled code too; Intel's does; GCC's own libgomp does not.
 The runtime asks for a tool once, when it starts, so ask for the source before the program's first OpenMP call, in the environment or by configuring Waggle first.
 Worksharing chunks and explicit tasks are not recorded: a loop of many small chunks would multiply the events.
@@ -214,6 +217,7 @@ So each sample also records its call chain, and a sample in such code is credite
 Call chains come from frame pointers: build your code with ``-fno-omit-frame-pointer`` (the default on Fedora and Ubuntu), and the line that called a library is found however the library was built.
 A library built without them can make the chain skip a frame inside it, so the function named as called may be one the library called in turn; the line that called is still yours.
 ``sampling_callchain=false`` keeps only where each sample was.
+With the openmp source too, a region's zone also counts the samples of the other threads' shares of it (see openmp above).
 The source reports ``unavailable`` on macOS and Windows, and where the kernel or a container's seccomp profile refuses ``perf_event_open``, saying what to change.
 
 signposts

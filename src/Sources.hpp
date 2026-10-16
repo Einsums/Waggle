@@ -81,6 +81,12 @@ namespace ompt {
 /// The OpenMP source: zones for parallel regions, each thread's share of them, and barrier waits,
 /// from the runtime's OMPT callbacks.
 WAGGLE_EXPORT auto status() -> SourceStatus;
+/// The site of the region zone ("omp parallel: f") whose threads' shares are zones of @p work_site
+/// ("omp work: f"), or 0 when @p work_site is no share's: for crediting a worker's samples to the
+/// zone that started its region too.
+WAGGLE_EXPORT auto region_site_of(uint32_t work_site) -> uint32_t;
+/// Whether @p site is a region zone's ("omp parallel: f").
+WAGGLE_EXPORT auto is_region_site(uint32_t site) -> bool;
 } // namespace ompt
 
 /// A demangled function name without its argument list or return type, for naming a zone after

@@ -87,6 +87,17 @@ def _by_zone(ext: dict[str, Any]) -> dict[str, Counter[int]]:
     return zones
 
 
+def _workers_by_zone(ext: dict[str, Any]) -> dict[str, Counter[int]]:
+    """Each OpenMP region zone's samples from the other threads' shares of it, by address."""
+    zones: dict[str, Counter[int]] = {}
+    for zone in ext.get("zones", []):
+        if workers := zone.get("workers"):
+            counts = zones.setdefault(zone["path"][-1], Counter())
+            for address, n in workers.get("addresses", {}).items():
+                counts[int(address, 16)] += int(n)
+    return zones
+
+
 def _callers_by_zone(ext: dict[str, Any]) -> dict[str, Counter[tuple[int, int]]]:
     """Each zone's samples in code without line information, by (caller, callee) address."""
     zones: dict[str, Counter[tuple[int, int]]] = {}
@@ -342,12 +353,16 @@ def summary(session: Session, *, symbols: bool = True, machine_file: str | None 
 
     zones = _by_zone(ext) if ext else {NO_ZONE: Counter()}
     callers = _callers_by_zone(ext) if ext else {}
+    workers = _workers_by_zone(ext) if ext else {}
     no_zone = zones.pop(NO_ZONE)
     total = sum(sum(c.values()) for c in zones.values()) + sum(no_zone.values())
     addresses = {a for c in zones.values() for a in c} | {a for c in callers.values() for a in _caller_addresses(c)}
+    addresses |= {a for c in workers.values() for a in c}
     result = _symbols(ext, addresses, symbols and ext is not None) if ext else Result()
 
     sampled = [name for name, counts in sorted(zones.items(), key=lambda item: (-sum(item[1].values()), item[0])) if counts]
+    # A region zone whose launching thread spent its time in its own share has only its workers'.
+    sampled += sorted((n for n in workers if n not in sampled), key=lambda n: -sum(workers[n].values()))
     others = sorted((n for n in counted if n not in zones or not zones[n]), key=lambda n: -inclusive[n][0])
     # Zones that allocated a checked block, after the rest.
     allocating = list(dict.fromkeys(b["zone"] for b in (numa or {}).get("blocks", [])))
@@ -373,6 +388,11 @@ def summary(session: Session, *, symbols: bool = True, machine_file: str | None 
             if callers.get(name):
                 zone["caller_lines"] = caller_lines(callers[name], samples, result, SUMMARY_TOP)
             zone["hot_functions"] = hot_functions(counts, result, SUMMARY_TOP)
+        if ext is not None and (theirs := workers.get(name)):
+            # Counted apart: they are the workers' share zones' samples too, so in no total above.
+            zone["worker_samples"] = sum(theirs.values())
+            if symbols:
+                zone["worker_hot_lines"] = hot_lines(theirs, result, SUMMARY_TOP)
         if numa is not None:
             mine = [b for b in numa["blocks"] if b["zone"] == name]
             if mine:
@@ -639,6 +659,10 @@ def _text_summary(data: dict[str, Any], top: int) -> str:
                 lines.append(f"{'':>44}{', '.join(notes)}")
         for hot in z.get("hot_lines", [])[:3]:
             lines.append(f"{'':>44}{hot['samples_pct']:>5.1f}%  {_location(hot)}  {hot['function']}")
+        if z.get("worker_samples"):
+            lines.append(f"{'':>44}{z['worker_samples']} samples in its workers' shares:")
+            for hot in z.get("worker_hot_lines", [])[:3]:
+                lines.append(f"{'':>44}{hot['samples_pct']:>5.1f}%  {_location(hot)}  {hot['function']}")
         for finding in z.get("findings", []):
             lines.append(f"{'':>44}! {finding}")
         for call in z.get("caller_lines", [])[:2]:

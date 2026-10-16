@@ -22,6 +22,7 @@
 #include "Energy.hpp"
 #include "Numa.hpp"
 #include "Process.hpp"
+#include "Sources.hpp"
 
 WAGGLE_NAMESPACE_BEGIN
 
@@ -308,10 +309,33 @@ void Consumer::run_sampler(size_t registrations) {
                        .why_not   = _sampler.why_not()};
 }
 
+auto Consumer::launcher_samples(ThreadState const &ts, ThreadState::StackFrame const &frame) -> SampleCounts * {
+    auto [known, added] = _region_site_of.try_emplace(frame.site_id, 0);
+    if (added) {
+        known->second = ompt::region_site_of(frame.site_id);
+    }
+    if (known->second == 0) {
+        return nullptr;
+    }
+    auto const launcher = _launched.find(known->second);
+    if (launcher == _launched.end()) {
+        // Threads' events are merged one thread at a time: the launcher's may come later in the pass.
+        // Its own share is never here, as its stream opens the region before the share.
+        return &_unlaunched[known->second];
+    }
+    // The thread that started the region shares in it too: its share's samples are its own already.
+    return launcher->second.first == &ts ? nullptr : &launcher->second.second->worker_samples;
+}
+
 void Consumer::credit_samples(std::deque<WaitingSample> &waiting, ThreadState *ts, uint64_t ticks) {
     while (!waiting.empty() && waiting.front().ticks < ticks) {
         AggNode *node = ts == nullptr || ts->stack.empty() ? nullptr : ts->stack.back().node;
         (node != nullptr ? node->samples : _unzoned).add(waiting.front().ip, waiting.front().caller);
+        if (node != nullptr) {
+            if (SampleCounts *launcher = launcher_samples(*ts, ts->stack.back())) {
+                launcher->add(waiting.front().ip, waiting.front().caller);
+            }
+        }
         waiting.pop_front();
     }
 }
@@ -391,9 +415,14 @@ auto Consumer::cpu_json(bool always) const -> std::string {
         while (!pending.empty()) {
             auto const [node, path] = pending.back();
             pending.pop_back();
-            if (node->samples.total > 0) {
+            if (node->samples.total > 0 || node->worker_samples.total > 0) {
                 out += fmt::format(R"({}{{"thread": {}, "path": [{}], )", first ? "" : ", ", thread_id, path);
                 write_samples_json(out, node->samples);
+                if (node->worker_samples.total > 0) {
+                    out += R"(, "workers": {)";
+                    write_samples_json(out, node->worker_samples);
+                    out += "}";
+                }
                 out += "}";
                 first = false;
             }
@@ -675,6 +704,7 @@ void clear_statistics(AggNode &node) {
     node.energy_nj        = 0;
     node.e_core_energy_nj = 0;
     node.samples.clear();
+    node.worker_samples.clear();
     node.call_count           = 0;
     node.total_exclusive      = ns{0};
     node.total_exclusive_mean = 0.0;
@@ -732,6 +762,9 @@ void Consumer::reset() {
         }
     }
 
+    // A region's node freed above is one no worker can be in either.
+    std::erase_if(_launched, [&](auto const &entry) { return !open.contains(entry.second.second); });
+    _unlaunched.clear();
     _timeline.clear();
     _timeline_next = 0;
     // Energy is credited afresh; the readings stay as the baselines.
@@ -955,6 +988,7 @@ void Consumer::process_push(ThreadState &ts, Event const &evt, uint32_t thread_i
     uint32_t const          name_id = evt.name_id != 0 ? evt.name_id : site.name_id;
     ThreadState::StackFrame frame{};
     frame.name_id    = name_id;
+    frame.site_id    = evt.site_id;
     frame.child_time = ns{0};
     frame.start      = TickClock::instance().to_time_point(std::max(evt.ticks, _reset_ticks));
     for (int i = 0; i < kNumCounterSlots; ++i)
@@ -1000,6 +1034,19 @@ void Consumer::process_push(ThreadState &ts, Event const &evt, uint32_t thread_i
         it                        = parent->children.find(name_id);
     }
     frame.node = it->second.get();
+    if (_sampling_on.load(std::memory_order_relaxed)) {
+        auto [region, added] = _is_region_site.try_emplace(evt.site_id, false);
+        if (added) {
+            region->second = ompt::is_region_site(evt.site_id);
+        }
+        if (region->second) {
+            _launched[evt.site_id] = {&ts, frame.node};
+            if (auto const early = _unlaunched.find(evt.site_id); early != _unlaunched.end()) {
+                frame.node->worker_samples.merge(early->second);
+                _unlaunched.erase(early);
+            }
+        }
+    }
 
     ts.stack.push_back(frame);
     // The trace has the zone's own name, though the tree may have folded it into "(other)", and

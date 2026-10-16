@@ -110,6 +110,11 @@ def node_details(
         for hot in hot_lines:
             where = f"{Path(hot['file']).name}:{hot['line']}" if hot.get("file") else "(no line information)"
             lines.append(f"    {hot['samples_pct']:5.1f}%  {escape(where)}  {escape(hot['function'])}")
+    if cpu and cpu.get("worker_samples"):
+        lines.append(f"  [bold]Its workers[/bold] ({cpu['worker_samples']} samples in the other threads' shares):")
+        for hot in cpu.get("worker_hot_lines", [])[:5]:
+            where = f"{Path(hot['file']).name}:{hot['line']}" if hot.get("file") else "(no line information)"
+            lines.append(f"    {hot['samples_pct']:5.1f}%  {escape(where)}  {escape(hot['function'])}")
     if cpu and (compute := cpu.get("compute")):
         memory = cpu.get("memory") or {}
         text = f"{compute['gflops']} GFLOP/s {compute['precision']}"

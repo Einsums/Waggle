@@ -60,6 +60,15 @@ struct SampleCounts {
         by_address.clear();
         by_caller.clear();
     }
+    void merge(SampleCounts const &other) {
+        total += other.total;
+        for (auto const &[ip, count] : other.by_address) {
+            by_address[ip] += count;
+        }
+        for (auto const &[call, count] : other.by_caller) {
+            by_caller[call] += count;
+        }
+    }
 };
 
 // ---------------------- Aggregation node ----------------------
@@ -116,6 +125,10 @@ struct AggNode {
     /// The sampling source's samples taken while this zone was the innermost open one on its
     /// thread. Exclusive, as time is.
     SampleCounts samples;
+    /// For an OpenMP region's zone ("omp parallel: f"): the samples of the other threads' shares
+    /// of it, counted here too, so the zone that started the work sees where its workers' time
+    /// went. Apart from @ref samples, which stay its own thread's.
+    SampleCounts worker_samples;
 
     // Per-call log2 histogram: 21 buckets from 1us to ~2s (bucket i = [2^i us, 2^(i+1) us))
     static constexpr int kHistogramBuckets = 21;
@@ -210,6 +223,7 @@ struct LiveAllocation {
 struct ThreadState {
     struct StackFrame {
         uint32_t  name_id; ///< the zone's name: the event's run-time name, else its site's
+        uint32_t  site_id{0};
         ns        child_time{0};
         TimePoint start;
         uint64_t  counters[kNumCounterSlots]{}; // NOLINT(modernize-avoid-c-arrays)
@@ -505,6 +519,19 @@ class WAGGLE_EXPORT Consumer {
     std::unordered_map<uint64_t, uint32_t>                  _thread_of_kernel;          ///< kernel id -> thread id
     std::deque<WaitingSample>                              *_draining_samples{nullptr}; ///< the thread being drained's
     SampleCounts                                            _unzoned;
+    /// For crediting a worker's samples to its region's zone: each work site's region site (0 for
+    /// none) and whether each site is a region's, asked of the openmp source once per site; and the
+    /// node and thread each region site last opened on, kept past its close, as the threads' events
+    /// are merged one thread at a time and a worker's may come after its launcher's close.
+    std::unordered_map<uint32_t, uint32_t>                                  _region_site_of;
+    std::unordered_map<uint32_t, bool>                                      _is_region_site;
+    std::unordered_map<uint32_t, std::pair<ThreadState const *, AggNode *>> _launched;
+    /// Workers' samples merged before their region was seen to open, by region site, for its node.
+    std::unordered_map<uint32_t, SampleCounts> _unlaunched;
+    /// Where a sample in the share zone @p frame on @p ts counts too: the worker samples of its
+    /// region's zone, opened on another thread, or of @ref _unlaunched until that is seen; null when
+    /// @p frame is no share of another thread's region.
+    auto launcher_samples(ThreadState const &ts, ThreadState::StackFrame const &frame) -> SampleCounts *;
 
     /// The numa source, under _tree_mutex except the switches and the pass mutex. A block keeps
     /// its placement each time it changes, and the CPU time the process's threads spent on each

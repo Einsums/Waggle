@@ -4,8 +4,8 @@
 //----------------------------------------------------------------------------------------------
 
 // The OpenMP source, against a real OpenMP runtime with OMPT (LLVM's libomp). One executable, run
-// twice: "[active]" with WAGGLE_SOURCES=openmp in the environment, so the source attaches when the
-// runtime starts, and "[missed]" without it.
+// three times: "[active]" with WAGGLE_SOURCES=openmp in the environment, so the source attaches when
+// the runtime starts, "[missed]" without it, and "[sampled]" with the sampling source too.
 
 #include <Waggle/Config.hpp>
 
@@ -22,7 +22,9 @@
 #include <thread>
 #include <vector>
 
+#include "Consumer.hpp"
 #include "OmptTypes.hpp"
+#include "Profiler.hpp"
 #include "Sources.hpp"
 
 #if __has_include(<omp-tools.h>)
@@ -71,6 +73,34 @@ std::atomic<long> g_sink{0};
 #pragma omp barrier
     }
     g_sink += total;
+}
+
+/// A region whose every thread spins for @p ms, so each is sampled.
+[[gnu::noinline]] void ompt_test_spinning_region(int ms) {
+#pragma omp parallel   num_threads(kThreads)
+    {
+        auto const end  = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+        long       spun = 0;
+        while (std::chrono::steady_clock::now() < end) {
+            ++spun;
+        }
+        g_sink += spun;
+    }
+}
+
+auto find_node(waggle::AggNode const &root, std::string_view prefix) -> waggle::AggNode const * {
+    std::vector<waggle::AggNode const *> pending{&root};
+    while (!pending.empty()) {
+        auto const *node = pending.back();
+        pending.pop_back();
+        if (node->name.starts_with(prefix)) {
+            return node;
+        }
+        for (auto const &c : node->children) {
+            pending.push_back(c.second.get());
+        }
+    }
+    return nullptr;
 }
 
 auto child(waggle::SnapshotNode const &node, std::string_view prefix) -> std::optional<waggle::SnapshotNode> {
@@ -220,4 +250,48 @@ TEST_CASE("A thread's share of a region ends with the region, not when the next 
         ++workers;
     }
     CHECK(workers == kThreads - 1);
+}
+
+TEST_CASE("A region's zone counts its workers' samples apart from its own", "[ompt][sampled]") {
+    omp_set_num_threads(kThreads);
+    auto &prof   = waggle::Profiler::instance();
+    auto  status = waggle::sampling::status();
+    for (int i = 0; i < 200 && status.state == "waiting"; ++i) {
+        prof.flush();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        status = waggle::sampling::status();
+    }
+    if (status.state != "active") {
+        SKIP("sampling is " + status.state + ": " + status.detail);
+    }
+    {
+        waggle::ScopedZone const outer("ompt: sampled");
+        for (int i = 0; i < 10; ++i) {
+            ompt_test_spinning_region(50);
+        }
+    }
+    prof.flush();
+
+    auto const lock    = prof.consumer()->lock_shared();
+    uint64_t   own     = 0; // in the region's zone and the launching thread's share of it
+    uint64_t   workers = 0; // in the other threads' shares
+    uint64_t   counted = 0; // credited to the region's zone from them
+    for (auto const &[id, ts] : prof.consumer()->thread_data()) {
+        if (auto const *outer = find_node(ts.root, "ompt: sampled")) {
+            auto const *region = find_node(*outer, "omp parallel: ");
+            REQUIRE(region != nullptr);
+            auto const *share = find_node(*region, "omp work: ");
+            REQUIRE(share != nullptr);
+            own     = region->samples.total + share->samples.total;
+            counted = region->worker_samples.total;
+            CHECK(share->worker_samples.total == 0);
+        } else if (auto const *share = find_node(ts.root, "omp work: ")) {
+            workers += share->samples.total;
+        }
+    }
+    INFO("own: " << own << ", workers': " << workers << ", counted on the region: " << counted);
+    // Each thread spins about half a second, so a few hundred samples each on an idle machine; a
+    // loaded one runs them less, and the check is only that the workers' are counted, once.
+    REQUIRE(workers > 0);
+    CHECK(counted == workers);
 }

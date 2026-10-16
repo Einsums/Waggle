@@ -156,6 +156,9 @@ if(OpenMP_CXX_FOUND AND WAGGLE_LIBOMP AND NOT MSVC)
   set_tests_properties(${WAGGLE_TEST_PREFIX}Ompt PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false;WAGGLE_SOURCES=openmp" TIMEOUT 300)
   add_test(NAME ${WAGGLE_TEST_PREFIX}OmptMissed COMMAND waggle_Ompt_test "[missed]")
   set_tests_properties(${WAGGLE_TEST_PREFIX}OmptMissed PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false" TIMEOUT 300)
+  add_test(NAME ${WAGGLE_TEST_PREFIX}OmptSampled COMMAND waggle_Ompt_test "[sampled]")
+  set_tests_properties(${WAGGLE_TEST_PREFIX}OmptSampled PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false;WAGGLE_SOURCES=openmp,sampling" TIMEOUT 300
+                                                                  SKIP_RETURN_CODE 4)
 elseif(WAGGLE_REQUIRE_OMPT_TEST)
   # CI asks for the test, so a missing runtime fails there rather than leaving it unbuilt.
   message(FATAL_ERROR "The OpenMP source's test needs OpenMP and LLVM's libomp (found OpenMP: ${OpenMP_CXX_FOUND}, libomp: ${WAGGLE_LIBOMP})")
@@ -409,7 +412,7 @@ endforeach()
 # Tests whose numbers depend on having the CPU (samples in a time, FLOP rates against a peak) run
 # alone even under ctest -j: a machine that limits a user's CPU (a cluster login node caps it at
 # one) otherwise shares it among them, and they measure each other.
-foreach(_test IN ITEMS SamplingSource SamplingSession RooflineSource RooflineSession NumaSession)
+foreach(_test IN ITEMS SamplingSource OmptSampled SamplingSession RooflineSource RooflineSession NumaSession)
   if(TEST ${WAGGLE_TEST_PREFIX}${_test})
     set_property(TEST ${WAGGLE_TEST_PREFIX}${_test} PROPERTY RUN_SERIAL TRUE)
   endif()

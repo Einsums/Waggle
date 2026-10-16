@@ -98,6 +98,34 @@ def test_a_session_without_samples_says_how_to_record_them(tmp_path):
         main(["cpu", str(path)])
 
 
+def test_a_region_zone_counts_its_workers_samples_apart_from_its_own(monkeypatch, capsys):
+    region = json.loads(json.dumps(SESSION))
+    ext = region["extensions"]["cpu"]
+    # Its launching thread's time is in its own share; its two workers' are counted on it as well.
+    ext["zones"] += [
+        {"thread": 1, "path": ["solve", "omp parallel: f"], "samples": 0, "addresses": {},
+         "workers": {"samples": 300, "addresses": {"0x30": 240, "0x50": 60}}},
+        {"thread": 1, "path": ["solve", "omp parallel: f", "omp work: f"], "samples": 120, "addresses": {"0x30": 120}},
+        {"thread": 2, "path": ["omp work: f"], "samples": 300, "addresses": {"0x30": 240, "0x50": 60}},
+    ]  # fmt: skip
+    work = Location(0x30, "/bin/prog", 0x30, (Frame("f", "/src/f.cpp", 12),))
+    tail = Location(0x50, "/bin/prog", 0x50, (Frame("f", "/src/f.cpp", 15),))
+    monkeypatch.setattr(cpu, "_symbols", lambda ext, addresses, wanted: Result(locations={0x30: work, 0x50: tail}))
+    data = cpu.summary(session_from_dict(region, "s0"))
+    zones = {z["name"]: z for z in data["zones"]}
+    # Not in any share of the samples: they are the workers' share zones' already.
+    assert zones["omp work: f"]["samples"] == 420
+    assert sum(z["samples"] for z in data["zones"]) + data["no_zone"]["samples"] == 1420
+    parallel = zones["omp parallel: f"]
+    assert parallel["samples"] == 0 and parallel["worker_samples"] == 300
+    assert [(h["line"], h["samples_pct"]) for h in parallel["worker_hot_lines"]] == [(12, 80.0), (15, 20.0)]
+    assert "worker_samples" not in zones["omp work: f"]
+    print(cpu._text_summary(data, 0))
+    assert "300 samples in its workers' shares:" in capsys.readouterr().out
+    shown = node_details(ProfileNode(name="omp parallel: f"), 1.0, cpu=parallel)
+    assert "Its workers" in shown and "f.cpp:12" in shown
+
+
 @pytest.mark.parametrize(
     ("demangled", "short"),
     [

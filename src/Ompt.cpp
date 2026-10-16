@@ -16,6 +16,7 @@
 
 #include <fmt/format.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <deque>
@@ -58,8 +59,9 @@ uint32_t                                         g_domain = 0;
 std::int32_t const                              *g_switch = nullptr;    // the "openmp" domain's switch, global and domain together
 uint32_t                                         g_barrier_sites[11]{}; // NOLINT(modernize-avoid-c-arrays): by ompt_sync_region_t
 std::mutex                                       g_regions_mutex;
-std::deque<Region>                               g_regions;   // stable addresses, under g_regions_mutex
-std::unordered_map<void const *, Region const *> g_region_of; // by call site, under g_regions_mutex
+std::unordered_map<uint32_t, uint32_t>           g_region_of_work; // work site -> region site, under g_regions_mutex
+std::deque<Region>                               g_regions;        // stable addresses, under g_regions_mutex
+std::unordered_map<void const *, Region const *> g_region_of;      // by call site, under g_regions_mutex
 
 /// This thread's open OpenMP zones. Trivially destructible on purpose: the runtime calls back while
 /// a thread, or the process, is being torn down, after a thread_local with a destructor is gone.
@@ -172,6 +174,7 @@ auto region_at(void const *codeptr) -> Region const * {
     if (added) {
         std::string const function = waggle::function_at(codeptr);
         it->second = &g_regions.emplace_back(Region{site("omp parallel: " + function, function), site("omp work: " + function, function)});
+        g_region_of_work[it->second->work_site] = it->second->region_site;
     }
     cache.emplace(codeptr, it->second);
     return it->second;
@@ -320,6 +323,17 @@ void finalize(ompt_data_t * /*tool_data*/) {
 WAGGLE_NAMESPACE_BEGIN
 
 namespace ompt {
+auto region_site_of(uint32_t work_site) -> uint32_t {
+    std::scoped_lock const lock(g_regions_mutex);
+    auto const             it = g_region_of_work.find(work_site);
+    return it == g_region_of_work.end() ? 0 : it->second;
+}
+
+auto is_region_site(uint32_t site) -> bool {
+    std::scoped_lock const lock(g_regions_mutex);
+    return std::ranges::any_of(g_region_of_work, [site](auto const &entry) { return entry.second == site; });
+}
+
 auto status() -> SourceStatus {
     SourceStatus status{.name = "openmp", .state = "off", .detail = ""};
     if (collector_inactive()) {
