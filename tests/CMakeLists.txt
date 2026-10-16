@@ -334,6 +334,16 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME ${WAGGLE_TEST_PREFIX}SamplingSession COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/sampling_session.py
                                                            $<TARGET_FILE:waggle_Sampling_test>
   )
+  # The roofline source end to end: redundant FLOPs and byte efficiency against work hints, from
+  # saved sessions; skipped (exit code 4) where the source cannot count.
+  add_test(NAME ${WAGGLE_TEST_PREFIX}RooflineSession COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/roofline_session.py
+                                                           $<TARGET_FILE:waggle_Roofline_test>
+  )
+  set_tests_properties(
+    ${WAGGLE_TEST_PREFIX}RooflineSession PROPERTIES ENVIRONMENT "PYTHONPATH=${_waggle_sampling_python_path}" TIMEOUT 300 SKIP_RETURN_CODE 4
+                                                    PASS_REGULAR_EXPRESSION "roofline: efficiencies as expected"
+  )
+
   # The numa source end to end: first touch and migration found in saved sessions; skipped (exit
   # code 4) on a machine of one node.
   add_test(NAME ${WAGGLE_TEST_PREFIX}NumaSession COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/numa_session.py
@@ -378,7 +388,7 @@ endif()
 foreach(_kind IN ITEMS PMU NUMA)
   if(WAGGLE_REQUIRE_${_kind}_TEST)
     if(_kind STREQUAL "PMU")
-      set(_tests RooflineSource SamplingSource SamplingSession)
+      set(_tests RooflineSource RooflineSession SamplingSource SamplingSession)
     else()
       set(_tests Numa NumaSession)
     endif()

@@ -229,11 +229,10 @@ def _efficiency(zone: dict[str, Any], inclusive_ms: float, counters: dict[str, i
         memory["byte_efficiency"] = round(work_bytes / memory["bytes"], 3)
     flop_s = (work_flops or 0) / (peak.get(f"{precision}_gflops", 0) * 1e9) if peak.get(f"{precision}_gflops") else 0.0
     byte_s = (work_bytes or 0) / (peak.get("dram_gbs", 0) * 1e9) if peak.get("dram_gbs") else 0.0
-    if work_flops or work_bytes:
-        if max(flop_s, byte_s) > 0:
-            zone["gap_to_ideal"] = round(inclusive_ms / 1e3 / max(flop_s, byte_s), 2)
-        # Which roof the work itself meets first. Without hints a zone's own counts cannot say: one
-        # that does little of either sits under both roofs, bound by neither.
+    # The gap and which roof the work meets first need the machine's peaks. Without hints a zone's
+    # own counts cannot say which: one that does little of either sits under both roofs.
+    if (work_flops or work_bytes) and max(flop_s, byte_s) > 0:
+        zone["gap_to_ideal"] = round(inclusive_ms / 1e3 / max(flop_s, byte_s), 2)
         zone["bound"] = "compute" if flop_s >= byte_s else "memory"
 
 
@@ -362,8 +361,9 @@ def summary(session: Session, *, symbols: bool = True, machine_file: str | None 
             zone["calls"] = node.call_count
             zone["time_ms"] = {"exclusive": round(node.exclusive_ms, 3), "inclusive": round(inclusive[name][0], 3)}
             zone.update(counted.get(name, {}))
-            if peak and name in inclusive:
-                _efficiency(zone, *inclusive[name], peak)
+            # Counted against the work's needs, with or without a calibration; against peaks with one.
+            if name in inclusive:
+                _efficiency(zone, *inclusive[name], peak or {})
         if ext is not None:
             zone["samples"] = samples
             zone["samples_pct"] = _pct(samples, total)

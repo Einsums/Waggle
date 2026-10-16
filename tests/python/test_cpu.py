@@ -484,3 +484,14 @@ def test_the_viewer_fetches_a_live_programs_cpu_data():
         server.close()
 
     asyncio.run(main())
+
+
+def test_work_hints_give_efficiencies_without_a_calibration(tmp_path):
+    zone = _counted("contract", 1000.0, 20_000_000_000, 1_000_000_000)
+    zone["annotations"] = {"work.flops": {"avg": 1e10, "min": 1e10, "max": 1e10}, "work.bytes": {"avg": 5e8, "min": 5e8, "max": 5e8}}
+    session = {"format": "waggle-session", "version": 1, "label": "eff", "threads": {"1": {"name": "main", "children": [zone]}},
+               "extensions": {"cpu": {"schema": "waggle.cpu/1", "machine": {"host": "x", "cpu": "Unseen CPU", "sockets": 1, "cpus": 4}}}}  # fmt: skip
+    z = cpu.summary(session_from_dict(session, "s0"), machine_file=str(tmp_path / "none.json"))["zones"][0]
+    assert z["compute"]["redundant_flops"] == 2.0 and z["memory"]["byte_efficiency"] == 0.5
+    # Against peaks only with a calibration.
+    assert "peak_pct" not in z["compute"] and "gap_to_ideal" not in z and "bound" not in z

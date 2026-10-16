@@ -222,3 +222,68 @@ TEST_CASE("A roofline precision it does not know is refused, saying which it tak
     CHECK(why == "roofline_precision is \"fp128\"; it takes fp64 or fp32");
 }
 #endif
+
+// Programs whose work is known, run by tests/roofline_session.py with WAGGLE_SOURCES=roofline,
+// which reads their efficiencies back with `waggle cpu`. Each zone gives its work hints per call,
+// as Einsums gives each contraction's.
+namespace {
+
+/// c = a * b + 1: one fused multiply-add, 2 FLOPs, per element.
+[[gnu::noinline]] void multiply_add(double const *a, double const *b, double *c, std::size_t n) {
+    for (std::size_t i = 0; i < n; ++i) {
+        c[i] = a[i] * b[i] + 1.0;
+    }
+}
+
+/// C += A B, n by n, the plain way: 2 n^3 FLOPs.
+[[gnu::noinline]] void plain_dgemm(double const *a, double const *b, double *c, std::size_t n) {
+    for (std::size_t i = 0; i < n; ++i) {
+        for (std::size_t k = 0; k < n; ++k) {
+            double const aik = a[i * n + k];
+            for (std::size_t j = 0; j < n; ++j) {
+                c[i * n + j] += aik * b[k * n + j];
+            }
+        }
+    }
+}
+
+} // namespace
+
+TEST_CASE("Roofline - a program that computes each result twice", "[.recompute]") {
+    constexpr std::size_t n = 4 << 20;
+    std::vector<double>   a(n, 1.5), b(n, 2.0), c(n, 0.0);
+    for (int call = 0; call < 10; ++call) {
+        waggle::ScopedZone const zone("roofline: recompute");
+        waggle::annotate("work.flops", 2.0 * static_cast<double>(n));
+        multiply_add(a.data(), b.data(), c.data(), n);
+        multiply_add(a.data(), b.data(), c.data(), n); // the same results again
+    }
+    g_sink += static_cast<uint64_t>(c[n / 2]);
+}
+
+TEST_CASE("Roofline - a program that multiplies matrices", "[.dgemm]") {
+    constexpr std::size_t n = 256;
+    std::vector<double>   a(n * n, 1.0), b(n * n, 0.5), c(n * n, 0.0);
+    for (int call = 0; call < 10; ++call) {
+        waggle::ScopedZone const zone("roofline: dgemm");
+        waggle::annotate("work.flops", 2.0 * static_cast<double>(n * n * n));
+        waggle::annotate("work.bytes", 3.0 * static_cast<double>(n * n) * sizeof(double));
+        plain_dgemm(a.data(), b.data(), c.data(), n);
+    }
+    g_sink += static_cast<uint64_t>(c[n]);
+}
+
+TEST_CASE("Roofline - a program that reads every eighth double", "[.strided]") {
+    constexpr std::size_t n = std::size_t{32} << 20; // 256 MB, far past any last-level cache
+    std::vector<double>   data(n, 1.0);
+    for (int call = 0; call < 4; ++call) {
+        waggle::ScopedZone const zone("roofline: strided");
+        // The work needs the eighth it reads; each read brings in a whole 64-byte line.
+        waggle::annotate("work.bytes", static_cast<double>(n / 8) * sizeof(double));
+        double sum = 0.0;
+        for (std::size_t i = 0; i < n; i += 8) {
+            sum += data[i];
+        }
+        g_sink += static_cast<uint64_t>(sum);
+    }
+}
