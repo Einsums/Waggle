@@ -33,7 +33,7 @@ def record(program: str, case: str, saved: Path) -> dict:
     run = subprocess.run([program, case], env=env, check=False, capture_output=True, text=True)
     if run.returncode == 4 or "one NUMA node" in run.stdout:
         print("numa: this machine has one NUMA node")
-        sys.exit(4)
+        sys.exit(1 if os.environ.get("WAGGLE_REQUIRE_NUMA") else 4)
     check(run.returncode == 0, f"{case} failed:\n{run.stdout}{run.stderr}")
     out = subprocess.run(
         [sys.executable, "-m", "waggle", "cpu", str(saved), "--numa", "--format", "json"], check=True, capture_output=True, text=True

@@ -18,6 +18,8 @@ Building and testing
 
 The tests link the collector and Catch2's main and nothing else.
 Some need more than the build: the OpenMP source's test needs LLVM's libomp (``WAGGLE_REQUIRE_OMPT_TEST=ON`` makes its absence an error, as CI does), the Metal test a GPU, the signposts test ``xctrace``, and the mDNS discovery test a responder and ``zeroconf`` (``WAGGLE_REQUIRE_MDNS=1`` makes their absence a failure).
+The CPU sources' tests skip, saying why, where the machine cannot do what they test: sampling and the roofline counters need Linux perf_event with ``kernel.perf_event_paranoid`` 2 or less, the roofline counters a CPU whose FLOP events Waggle knows, and the NUMA programs two nodes.
+On a machine meant to have them, ``-DWAGGLE_REQUIRE_PMU_TEST=ON`` and ``-DWAGGLE_REQUIRE_NUMA_TEST=ON`` make those skips failures; CI, whose runners have neither, sets ``WAGGLE_REQUIRE_COUNTERS``, which makes the sampling tests' skips failures on Linux.
 ``waggle_ZoneCost_benchmark`` measures what a zone costs; it is a benchmark, not a test, and is built only when asked for.
 
 Formatting is enforced by pre-commit: ``pre-commit install``.

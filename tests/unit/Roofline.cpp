@@ -15,8 +15,10 @@
 #include <array>
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <map>
 #include <string>
 #include <thread>
@@ -63,6 +65,10 @@ void require_roofline() {
     auto const status = waggle::roofline::status();
     if (status.state != "active") {
         std::string const why = "roofline is " + status.state + ": " + status.detail;
+        // WAGGLE_REQUIRE_PMU (the WAGGLE_REQUIRE_PMU_TEST option): a machine meant to count.
+        if (std::getenv("WAGGLE_REQUIRE_PMU") != nullptr) { // NOLINT(concurrency-mt-unsafe)
+            FAIL(why);
+        }
         SKIP(why);
     }
 }
@@ -192,3 +198,27 @@ TEST_CASE("A zone that streams memory misses the last-level cache, and one in re
     CHECK(streams > 4 * 1024 * 1024);
     CHECK(streams > 100 * registers);
 }
+
+#ifdef __linux__
+TEST_CASE("Each refusal of perf_event_open says what to change", "[backend]") {
+    // The kernel's level refuses a process watching itself: name it, and the sysctl that fixes it.
+    auto const high = waggle::perf_refusal(EACCES, "4");
+    CHECK(high.find("kernel.perf_event_paranoid is 4") != std::string::npos);
+    CHECK(high.find("sysctl kernel.perf_event_paranoid=2") != std::string::npos);
+    // Refused although the level allows it: a container's seccomp profile.
+    auto const sandboxed = waggle::perf_refusal(EPERM, "2");
+    CHECK(sandboxed.find("seccomp") != std::string::npos);
+    CHECK(sandboxed.find("CAP_PERFMON") != std::string::npos);
+    // An unreadable level is taken for the kernel's refusal, the likelier cause.
+    CHECK(waggle::perf_refusal(EACCES, "").find("is unknown") != std::string::npos);
+    // No PMU, as on many virtual machines, and no perf_event_open at all.
+    CHECK(waggle::perf_refusal(ENOENT, "2").find("no hardware counters") != std::string::npos);
+    CHECK(waggle::perf_refusal(ENOSYS, "2").find("no perf_event_open") != std::string::npos);
+}
+
+TEST_CASE("A roofline precision it does not know is refused, saying which it takes", "[backend]") {
+    std::string why;
+    CHECK_FALSE(waggle::use_roofline_counters("fp128", why));
+    CHECK(why == "roofline_precision is \"fp128\"; it takes fp64 or fp32");
+}
+#endif

@@ -13,6 +13,7 @@
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <random>
 #include <string>
@@ -229,18 +230,38 @@ TEST_CASE("Sampling - a sample on a thread that never records is in no zone", "[
 // cannot sample (macOS, a kernel.perf_event_paranoid above 2, a container's seccomp profile).
 namespace {
 
+/// Whether the environment says this machine must sample: WAGGLE_REQUIRE_COUNTERS, which CI's
+/// Linux job sets once it lowers kernel.perf_event_paranoid, or WAGGLE_REQUIRE_PMU (the
+/// WAGGLE_REQUIRE_PMU_TEST option), on a machine meant to have hardware counters. Linux only:
+/// elsewhere there is nothing to sample with.
+auto sampling_required() -> bool {
+#if defined(__linux__)
+    return std::getenv("WAGGLE_REQUIRE_COUNTERS") != nullptr ||
+           std::getenv("WAGGLE_REQUIRE_PMU") != nullptr; // NOLINT(concurrency-mt-unsafe)
+#else
+    return false;
+#endif
+}
+
 void require_sampling() {
-    auto &prof = Profiler::instance();
-    (void)prof;
-    auto status = sampling::status();
+    auto &prof   = Profiler::instance();
+    auto  status = sampling::status();
     for (int i = 0; i < 200 && status.state == "waiting"; ++i) {
         prof.flush();
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         status = sampling::status();
     }
+    std::string const why = "sampling is " + status.state + ": " + status.detail;
     if (status.state != "active") {
-        std::string const why = "sampling is " + status.state + ": " + status.detail;
+        if (sampling_required()) {
+            FAIL(why);
+        }
         SKIP(why);
+    }
+    // A machine meant to have a PMU samples cycles, not the software clock it falls back to.
+    if (std::getenv("WAGGLE_REQUIRE_PMU") != nullptr &&
+        prof.consumer()->sampling_state().event != "cycles") { // NOLINT(concurrency-mt-unsafe)
+        FAIL("WAGGLE_REQUIRE_PMU is set, but " + why);
     }
 }
 

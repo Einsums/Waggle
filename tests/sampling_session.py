@@ -88,7 +88,10 @@ def main() -> None:
         saved = Path(tmp) / "run.json"
         if record(program, "[.program]", saved) is None:
             print("sampling: no cpu extension: perf_event could not sample here, so the source recorded nothing")
-            sys.exit(4)
+            # On Linux, where CI lowers kernel.perf_event_paranoid or the machine is meant to count,
+            # that is a failure, not a skip.
+            required = os.environ.get("WAGGLE_REQUIRE_COUNTERS") or os.environ.get("WAGGLE_REQUIRE_PMU")
+            sys.exit(1 if required and sys.platform.startswith("linux") else 4)
         summary = waggle_cpu(str(saved), "--no-symbols")
         check(summary["schema"] == "waggle.cpu.summary/1", f"schema {summary['schema']}")
         zones = {z["name"]: z for z in summary["zones"]}

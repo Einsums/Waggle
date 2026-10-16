@@ -95,6 +95,9 @@ WAGGLE_EXPORT auto multiplexed_threads() -> uint64_t;
 /// Why perf_event_open failed with @p error, in terms a person can act on: the sysctl to change, a
 /// container's seccomp profile, or a machine with no counters. The counters and sampling sources'.
 WAGGLE_EXPORT auto perf_refusal(int error) -> std::string;
+/// The same, with kernel.perf_event_paranoid's value given (empty when unreadable): for tests,
+/// which cannot change the machine's.
+WAGGLE_EXPORT auto perf_refusal(int error, std::string const &paranoid) -> std::string;
 
 /// Linux perf_event_open: a group of counters, read together in one system call.
 class WAGGLE_EXPORT PerfCounterBackend : public CounterBackend {

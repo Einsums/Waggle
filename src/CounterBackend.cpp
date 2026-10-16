@@ -44,6 +44,10 @@ long perf_event_open(struct perf_event_attr *attr, pid_t pid, int cpu, int group
 auto perf_refusal(int error) -> std::string {
     std::string paranoid;
     std::ifstream("/proc/sys/kernel/perf_event_paranoid") >> paranoid;
+    return perf_refusal(error, paranoid);
+}
+
+auto perf_refusal(int error, std::string const &paranoid) -> std::string {
     switch (error) {
     case EACCES:
     case EPERM: {

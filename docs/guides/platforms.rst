@@ -28,6 +28,22 @@ Waggle builds and is tested on Linux, macOS and Windows; what differs is what ea
       - perf: cycles, instructions, cache and branch misses
       - XNU: cycles and instructions, P/E split
       - not yet
+    * - ``numa`` source
+      - yes, with two nodes or more
+      - no (one node)
+      - not yet
+    * - ``roofline`` source
+      - perf: Intel cores from Broadwell on
+      - no (no public FLOP counters)
+      - no
+    * - ``sampling`` source
+      - perf: cycles, or the CPU clock without a PMU
+      - no
+      - no
+    * - ``waggle calibrate``
+      - yes
+      - yes (portable loop)
+      - not built (MSVC)
     * - ``energy`` source
       - no (RAPL is per package)
       - yes, per thread
@@ -48,7 +64,11 @@ Waggle builds and is tested on Linux, macOS and Windows; what differs is what ea
 Linux
 =====
 
-Hardware counters need ``kernel.perf_event_paranoid`` at 2 or less; Ubuntu sets 4.
+Hardware counters, sampling and the roofline counters need ``kernel.perf_event_paranoid`` at 2 or less; Ubuntu sets 4.
+In a container, the runtime's seccomp profile blocks ``perf_event_open`` unless the container has ``CAP_PERFMON``; the sources' status says which stopped them.
+The ``roofline`` source knows the FLOP events of Intel cores from Broadwell on, without efficiency cores; AMD's and Arm's are to come once checked on real machines.
+A virtual machine often has no PMU: ``sampling`` then samples the CPU clock, and ``roofline`` says it is unavailable.
+``waggle cpu`` names samples with ``addr2line`` from binutils, or ``llvm-symbolizer`` where it is on the path, and disassembles with ``objdump``; it reads the program's files, so run it where they are.
 Avahi's client library is loaded only when the server starts, so a machine without Avahi runs the server unadvertised.
 OpenMP regions need LLVM's libomp (which runs GCC-compiled code too) or Intel's runtime; GCC's libgomp has no OMPT.
 

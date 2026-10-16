@@ -370,3 +370,22 @@ if(WIN32)
     )
   endforeach()
 endif()
+
+# On a machine meant to have them, a missing PMU or second NUMA node fails these tests rather than
+# letting them skip, as WAGGLE_REQUIRE_OMPT_TEST does for OpenMP: -DWAGGLE_REQUIRE_PMU_TEST=ON
+# where hardware counters must work (kernel.perf_event_paranoid 2 or less, a CPU whose FLOP events
+# Waggle knows), -DWAGGLE_REQUIRE_NUMA_TEST=ON where there are two nodes or more.
+foreach(_kind IN ITEMS PMU NUMA)
+  if(WAGGLE_REQUIRE_${_kind}_TEST)
+    if(_kind STREQUAL "PMU")
+      set(_tests RooflineSource SamplingSource SamplingSession)
+    else()
+      set(_tests Numa NumaSession)
+    endif()
+    foreach(_test IN LISTS _tests)
+      if(TEST ${WAGGLE_TEST_PREFIX}${_test})
+        set_property(TEST ${WAGGLE_TEST_PREFIX}${_test} APPEND PROPERTY ENVIRONMENT "WAGGLE_REQUIRE_${_kind}=1")
+      endif()
+    endforeach()
+  endif()
+endforeach()

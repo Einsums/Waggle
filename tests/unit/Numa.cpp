@@ -18,6 +18,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -59,6 +60,10 @@ auto two_nodes() -> std::pair<int, int> {
 
 void require_two_nodes() {
     if (numa::topology().nodes < 2 || two_nodes().first < 0) {
+        // WAGGLE_REQUIRE_NUMA (the WAGGLE_REQUIRE_NUMA_TEST option): a machine meant to have two.
+        if (std::getenv("WAGGLE_REQUIRE_NUMA") != nullptr) { // NOLINT(concurrency-mt-unsafe)
+            FAIL("WAGGLE_REQUIRE_NUMA is set, but this machine has one NUMA node");
+        }
         SKIP("this machine has one NUMA node");
     }
 }
