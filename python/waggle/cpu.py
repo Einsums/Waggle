@@ -41,11 +41,11 @@ NO_ZONE = "(no zone)"
 def add_parser(sub) -> None:
     cpu = sub.add_parser(
         "cpu",
-        help="Where each zone's CPU time goes, from a session recorded with WAGGLE_SOURCES=sampling",
+        help="Where each zone's CPU time goes, from a session recorded with WAGGLE_SOURCES=sampling or roofline",
         description="Zones ranked by their share of the CPU samples, each with its hot lines; or one zone's lines, "
         "addresses or machine code.",
     )
-    cpu.add_argument("file", help="session file recorded with WAGGLE_SOURCES=sampling")
+    cpu.add_argument("file", help="session file recorded with WAGGLE_SOURCES=sampling, roofline, or both")
     cpu.add_argument("--session", default="-1", help="which session in a multi-session file: index or label (default: the last)")
     cpu.add_argument("--zone", metavar="NAME", help="one zone: its samples by address, or with --lines or --asm")
     view = cpu.add_mutually_exclusive_group()
@@ -164,45 +164,97 @@ def hot_functions(counts: Counter[int], result: Result, top: int = 0) -> list[di
     return rows[:top] if top else rows
 
 
-def summary(session: Session, *, symbols: bool = True) -> dict[str, Any]:
-    """The summary of @p session's samples: every zone with samples, most first, with its hot lines."""
-    ext = _extension(session)
-    zones = _by_zone(ext)
-    callers = _callers_by_zone(ext)
-    no_zone = zones.pop(NO_ZONE)
-    total = sum(sum(c.values()) for c in zones.values()) + sum(no_zone.values())
-    addresses = {a for c in zones.values() for a in c} | {a for c in callers.values() for a in _caller_addresses(c)}
-    result = _symbols(ext, addresses, symbols)
+_ROOFLINE_COUNTERS = ("fp64_flops", "fp32_flops", "llc_miss_bytes")
 
+
+def _inclusive_totals(session: Session) -> dict[str, tuple[float, dict[str, int]]]:
+    """Each zone's inclusive time and roofline counters, summed over its outermost calls on every
+    thread: both are measured from a zone's open to its close, children and all, so a call inside
+    another of the same name is already counted in it."""
+    totals: dict[str, tuple[float, dict[str, int]]] = {}
+    if session.snapshot is None:
+        return totals
+    for thread in session.snapshot.threads.values():
+        pending = [(child, frozenset()) for child in thread.children]
+        while pending:
+            node, above = pending.pop()
+            if node.name not in above:
+                ms, counters = totals.get(node.name, (0.0, {}))
+                counters = dict(counters)
+                for name in _ROOFLINE_COUNTERS:
+                    if isinstance(value := (node.counters or {}).get(name), dict):
+                        counters[name] = counters.get(name, 0) + int(value.get("total", 0))
+                totals[node.name] = (ms + node.inclusive_ms, counters)
+            pending += [(child, above | {node.name}) for child in node.children]
+    return totals
+
+
+def _roofline(inclusive_ms: float, counters: dict[str, int]) -> dict[str, Any]:
+    """A zone's FLOPs and estimated DRAM bytes from the roofline source's counters, per second of
+    its inclusive time: the counters are read as it opens and closes, so they include its children."""
+    out: dict[str, Any] = {}
+    seconds = inclusive_ms / 1e3
+    total = lambda name: counters.get(name, 0)  # noqa: E731
+    for precision in ("fp64", "fp32"):
+        if f"{precision}_flops" in counters:
+            flops = total(f"{precision}_flops")
+            out["compute"] = {"flops": flops, "gflops": round(flops / seconds / 1e9, 3) if seconds else None, "precision": precision}
+    if "llc_miss_bytes" in counters:
+        nbytes = total("llc_miss_bytes")
+        out["memory"] = {"bytes": nbytes, "gbs": round(nbytes / seconds / 1e9, 3) if seconds else None, "source": "llc_misses"}
+    if "compute" in out and "memory" in out and out["memory"]["bytes"]:
+        out["intensity"] = round(out["compute"]["flops"] / out["memory"]["bytes"], 3)
+    return out
+
+
+def summary(session: Session, *, symbols: bool = True) -> dict[str, Any]:
+    """The summary of @p session's CPU sources: every zone with samples, most first, with its hot
+    lines, then any other zone the roofline source counted; each with its FLOPs and bytes."""
+    ext = session.extensions.get("cpu")
+    if not isinstance(ext, dict) or "sampling" not in ext:
+        ext = None
     profile = {}
     if session.snapshot is not None:
         profile = {n.name: n for n in aggregate_flat([c for t in session.snapshot.threads.values() for c in t.children])}
+    inclusive = _inclusive_totals(session)
+    counted = {name: _roofline(ms, counters) for name, (ms, counters) in inclusive.items() if counters}
+    if ext is None and not counted:
+        raise SystemExit(
+            f"session {session.label!r} has no CPU data: record it with WAGGLE_SOURCES=sampling (or roofline) and WAGGLE_SAVE=FILE"
+        )
 
+    zones = _by_zone(ext) if ext else {NO_ZONE: Counter()}
+    callers = _callers_by_zone(ext) if ext else {}
+    no_zone = zones.pop(NO_ZONE)
+    total = sum(sum(c.values()) for c in zones.values()) + sum(no_zone.values())
+    addresses = {a for c in zones.values() for a in c} | {a for c in callers.values() for a in _caller_addresses(c)}
+    result = _symbols(ext, addresses, symbols and ext is not None) if ext else Result()
+
+    sampled = [name for name, counts in sorted(zones.items(), key=lambda item: (-sum(item[1].values()), item[0])) if counts]
+    others = sorted((n for n in counted if n not in zones or not zones[n]), key=lambda n: -inclusive[n][0])
     rows = []
-    for name, counts in sorted(zones.items(), key=lambda item: (-sum(item[1].values()), item[0])):
+    for name in sampled + others:
+        counts = zones.get(name, Counter())
         samples = sum(counts.values())
-        if not samples:
-            continue
         zone: dict[str, Any] = {"name": name}
         if (node := profile.get(name)) is not None:
             zone["calls"] = node.call_count
-            zone["time_ms"] = {"exclusive": round(node.exclusive_ms, 3)}
-        zone["samples"] = samples
-        zone["samples_pct"] = _pct(samples, total)
-        zone["low_confidence"] = samples < LOW_CONFIDENCE_SAMPLES
-        if symbols:
+            zone["time_ms"] = {"exclusive": round(node.exclusive_ms, 3), "inclusive": round(inclusive[name][0], 3)}
+            zone.update(counted.get(name, {}))
+        if ext is not None:
+            zone["samples"] = samples
+            zone["samples_pct"] = _pct(samples, total)
+            zone["low_confidence"] = samples < LOW_CONFIDENCE_SAMPLES
+        if symbols and ext is not None and samples:
             zone["hot_lines"] = hot_lines(counts, result, SUMMARY_TOP)
             if callers.get(name):
                 zone["caller_lines"] = caller_lines(callers[name], samples, result, SUMMARY_TOP)
             zone["hot_functions"] = hot_functions(counts, result, SUMMARY_TOP)
         rows.append(zone)
-    data: dict[str, Any] = {
-        "schema": SCHEMA,
-        "sampling": ext["sampling"],
-        "zones": rows,
-        "no_zone": {"samples": sum(no_zone.values()), "samples_pct": _pct(sum(no_zone.values()), total)},
-    }
-    if symbols:
+    data: dict[str, Any] = {"schema": SCHEMA, "sampling": ext["sampling"] if ext else None, "zones": rows}
+    if ext is not None:
+        data["no_zone"] = {"samples": sum(no_zone.values()), "samples_pct": _pct(sum(no_zone.values()), total)}
+    if symbols and ext is not None:
         data["symbols"] = _symbols_note(result)
     return data
 
@@ -348,24 +400,32 @@ def _symbols_footer(note: dict[str, Any] | None) -> list[str]:
 def _text_summary(data: dict[str, Any], top: int) -> str:
     s = data["sampling"]
     zones = data["zones"][:top] if top else data["zones"]
-    lines = [
-        f"{s['event']} sampled at {s['rate_hz']} Hz on {s['threads']} thread(s): {s['samples']} samples, {s['lost']} lost",
-        "",
-        f"{'samples %':>9}  {'samples':>8}  {'excl ms':>10}  {'calls':>8}  zone",
-    ]
+    lines = []
+    if s:
+        lines += [f"{s['event']} sampled at {s['rate_hz']} Hz on {s['threads']} thread(s): {s['samples']} samples, {s['lost']} lost", ""]
+    lines.append(f"{'samples %':>9}  {'samples':>8}  {'excl ms':>10}  {'calls':>8}  zone")
     for z in zones:
         excl = z.get("time_ms", {}).get("exclusive")
+        share = f"{z['samples_pct']:>9.1f}  {z['samples']:>8}" if "samples" in z else f"{'':>9}  {'':>8}"
         lines.append(
-            f"{z['samples_pct']:>9.1f}  {z['samples']:>8}  {'' if excl is None else f'{excl:.1f}':>10}  "
-            f"{z.get('calls', ''):>8}  {z['name']}{'  *' if z['low_confidence'] else ''}"
+            f"{share}  {'' if excl is None else f'{excl:.1f}':>10}  "
+            f"{z.get('calls', ''):>8}  {z['name']}{'  *' if z.get('low_confidence') else ''}"
         )
+        if (compute := z.get("compute")) is not None:
+            memory = z.get("memory") or {}
+            text = f"{compute['gflops']} GFLOP/s {compute['precision']}"
+            if memory:
+                text += f"    {memory['gbs']} GB/s (estimated from last-level cache misses)"
+            if "intensity" in z:
+                text += f"    {z['intensity']} FLOP/byte"
+            lines.append(f"{'':>44}{text}")
         for hot in z.get("hot_lines", [])[:3]:
             lines.append(f"{'':>44}{hot['samples_pct']:>5.1f}%  {_location(hot)}  {hot['function']}")
         for call in z.get("caller_lines", [])[:2]:
             lines.append(f"{'':>44}{call['samples_pct']:>5.1f}%  {_location(call)}  calls {call['callee']}")
-    nz = data["no_zone"]
-    lines.append(f"{nz['samples_pct']:>9.1f}  {nz['samples']:>8}  {'':>10}  {'':>8}  {NO_ZONE}")
-    if any(z["low_confidence"] for z in zones):
+    if nz := data.get("no_zone"):
+        lines.append(f"{nz['samples_pct']:>9.1f}  {nz['samples']:>8}  {'':>10}  {'':>8}  {NO_ZONE}")
+    if any(z.get("low_confidence") for z in zones):
         lines += ["", f"* under {LOW_CONFIDENCE_SAMPLES} samples: a longer run gives a surer share"]
     return "\n".join(lines + _symbols_footer(data.get("symbols")))
 

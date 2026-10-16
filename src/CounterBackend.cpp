@@ -10,7 +10,9 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <string>
@@ -72,48 +74,162 @@ auto perf_refusal(int error) -> std::string {
     }
 }
 
-PerfCounterBackend::PerfCounterBackend()
-    : PerfCounterBackend({{"cycles", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES},
-                          {"instructions", PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS},
-                          {"cache-misses", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CACHE_MISSES},
-                          {"branch-misses", PERF_TYPE_HARDWARE, PERF_COUNT_HW_BRANCH_MISSES}}) {
+namespace {
+
+auto one_per_slot(std::vector<PerfCounterBackend::Counter> const &counters) -> std::vector<PerfCounterBackend::Slot> {
+    std::vector<PerfCounterBackend::Slot> slots;
+    for (size_t i = 0; i < counters.size(); ++i) {
+        slots.push_back({.name = counters[i].name, .terms = {{static_cast<int>(i), 1}}});
+    }
+    return slots;
 }
 
-PerfCounterBackend::PerfCounterBackend(std::vector<Counter> counters) : _counters(std::move(counters)) {
-    _counters.resize(std::min<size_t>(_counters.size(), kNumCounterSlots));
+auto codes_of(std::vector<PerfCounterBackend::Counter> const &counters) -> std::vector<PerfCounterBackend::EventCode> {
+    std::vector<PerfCounterBackend::EventCode> codes;
+    for (auto const &c : counters) {
+        codes.push_back({.type = c.type, .config = c.config});
+    }
+    return codes;
+}
+
+/// The counters source's set: one event per slot.
+auto default_counters() -> std::vector<PerfCounterBackend::Counter> {
+    return {{"cycles", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES},
+            {"instructions", PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS},
+            {"cache-misses", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CACHE_MISSES},
+            {"branch-misses", PERF_TYPE_HARDWARE, PERF_COUNT_HW_BRANCH_MISSES}};
+}
+
+/// Threads whose groups take turns on the PMU, for the roofline source's status.
+std::atomic<uint64_t> g_multiplexed{0};
+
+/// A group's reading: PERF_FORMAT_GROUP with both times, then each event's count.
+struct GroupReading {
+    uint64_t nr;
+    uint64_t time_enabled;
+    uint64_t time_running;
+    uint64_t values[kMaxCounterEvents]; // NOLINT(modernize-avoid-c-arrays)
+};
+
+} // namespace
+
+PerfCounterBackend::PerfCounterBackend() : PerfCounterBackend(default_counters()) {
+}
+
+PerfCounterBackend::PerfCounterBackend(std::vector<Counter> counters) {
+    counters.resize(std::min<size_t>(counters.size(), kNumCounterSlots));
+    _events = codes_of(counters);
+    _slots  = one_per_slot(counters);
+}
+
+PerfCounterBackend::PerfCounterBackend(std::vector<EventCode> events, std::vector<Slot> slots, int split_after)
+    : _events(std::move(events)), _slots(std::move(slots)), _split_after(split_after) {
+    _events.resize(std::min<size_t>(_events.size(), kMaxCounterEvents));
+    _slots.resize(std::min<size_t>(_slots.size(), kNumCounterSlots));
+}
+
+auto PerfCounterBackend::reconfigure(std::vector<EventCode> events, std::vector<Slot> slots, std::string description) -> bool {
+    std::scoped_lock const lock(_mutex);
+    if (_opened) {
+        return false;
+    }
+    _events      = std::move(events);
+    _slots       = std::move(slots);
+    _description = std::move(description);
+    _events.resize(std::min<size_t>(_events.size(), kMaxCounterEvents));
+    _slots.resize(std::min<size_t>(_slots.size(), kNumCounterSlots));
+    return true;
+}
+
+auto PerfCounterBackend::describe() const -> std::string {
+    std::scoped_lock const lock(_mutex);
+    return _description;
+}
+
+auto PerfCounterBackend::open_group(ThreadCounters &tc, int first, int end) -> bool {
+    for (int i = first; i < end; ++i) {
+        struct perf_event_attr pe{};
+        pe.type           = _events[static_cast<size_t>(i)].type;
+        pe.size           = sizeof(pe);
+        pe.config         = _events[static_cast<size_t>(i)].config;
+        pe.disabled       = i == first ? 1 : 0; // the group starts when its leader is enabled
+        pe.exclude_kernel = 1;
+        pe.exclude_hv     = 1;
+        // One read() returns the whole group, with the time it was enabled and the time it ran on
+        // the PMU, which differ only when groups take turns.
+        pe.read_format = PERF_FORMAT_GROUP | PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING;
+        int const fd   = static_cast<int>(perf_event_open(&pe, 0, -1, i == first ? -1 : tc.fds[first], 0));
+        if (fd < 0) {
+            std::string            why = perf_refusal(errno);
+            std::scoped_lock const lock(_mutex);
+            _why_not = std::move(why);
+            return false;
+        }
+        tc.fds[i] = fd;
+        tc.count  = i + 1;
+    }
+    return true;
 }
 
 auto PerfCounterBackend::open(ThreadCounters &tc) -> bool {
     if (tc.open) {
         return true;
     }
-    for (size_t i = 0; i < _counters.size(); ++i) {
-        struct perf_event_attr pe{};
-        pe.type           = _counters[i].type;
-        pe.size           = sizeof(pe);
-        pe.config         = _counters[i].config;
-        pe.disabled       = i == 0 ? 1 : 0; // the group starts when its leader is enabled
-        pe.exclude_kernel = 1;
-        pe.exclude_hv     = 1;
-        pe.read_format    = PERF_FORMAT_GROUP; // one read() returns the whole group
-        int const fd      = static_cast<int>(perf_event_open(&pe, 0, -1, i == 0 ? -1 : tc.fds[0], 0));
-        if (fd < 0) {
-            std::string why = perf_refusal(errno);
-            close(tc);
-            std::scoped_lock const lock(_mutex);
-            _why_not = std::move(why);
-            return false;
-        }
-        tc.fds[i] = fd;
-        tc.count  = static_cast<int>(i) + 1;
+    std::vector<EventCode> events;
+    int                    split = 0;
+    {
+        std::scoped_lock const lock(_mutex);
+        _opened = true;
+        events  = _events;
+        split   = _split_after;
     }
-    if (tc.count == 0) {
+    int const n = static_cast<int>(events.size());
+    if (n == 0) {
         std::scoped_lock const lock(_mutex);
         _why_not = "no counters to open";
         return false;
     }
-    ioctl(tc.fds[0], PERF_EVENT_IOC_RESET, PERF_IOC_FLAG_GROUP);
-    ioctl(tc.fds[0], PERF_EVENT_IOC_ENABLE, PERF_IOC_FLAG_GROUP);
+    auto const start = [&](int groups, int at) {
+        tc.groups         = groups;
+        tc.group_start[0] = 0;
+        tc.group_start[1] = groups == 2 ? at : n;
+        tc.group_start[2] = n;
+        for (int g = 0; g < groups; ++g) {
+            if (!open_group(tc, tc.group_start[g], tc.group_start[g + 1])) {
+                close(tc);
+                return false;
+            }
+        }
+        for (int g = 0; g < groups; ++g) {
+            int const leader = tc.fds[tc.group_start[g]];
+            ioctl(leader, PERF_EVENT_IOC_RESET, PERF_IOC_FLAG_GROUP);
+            ioctl(leader, PERF_EVENT_IOC_ENABLE, PERF_IOC_FLAG_GROUP);
+        }
+        return true;
+    };
+    if (split > 0 && split < n) {
+        if (!start(2, split)) {
+            return false;
+        }
+    } else {
+        if (!start(1, n)) {
+            return false;
+        }
+        // A group the PMU cannot hold at once is never scheduled: enabled, it never runs. Then two
+        // halves, which it can hold in turns, the fixed counters (cycles, instructions) in the first.
+        GroupReading reading{};
+        if (::read(tc.fds[0], &reading, sizeof(reading)) > 0 && reading.time_enabled > 0 && reading.time_running == 0) {
+            close(tc);
+            if (!start(2, (n + 1) / 2)) {
+                return false;
+            }
+        }
+    }
+    tc.multiplexed = tc.groups > 1;
+    if (tc.multiplexed) {
+        g_multiplexed.fetch_add(1, std::memory_order_relaxed);
+    }
+    tc.last.fill(0);
     tc.open = true;
     return true;
 }
@@ -125,8 +241,10 @@ void PerfCounterBackend::close(ThreadCounters &tc) {
             fd = -1;
         }
     }
-    tc.count = 0;
-    tc.open  = false;
+    tc.count       = 0;
+    tc.groups      = 0;
+    tc.open        = false;
+    tc.multiplexed = false;
 }
 
 void PerfCounterBackend::read(ThreadCounters const &tc, std::array<uint64_t, kNumCounterSlots> &values) {
@@ -134,24 +252,158 @@ void PerfCounterBackend::read(ThreadCounters const &tc, std::array<uint64_t, kNu
     if (!tc.open) {
         return;
     }
-    // PERF_FORMAT_GROUP: the number of counters, then each value, in the order they were opened.
-    uint64_t group[1 + kNumCounterSlots]{}; // NOLINT(modernize-avoid-c-arrays)
-    if (::read(tc.fds[0], group, sizeof(group)) < static_cast<ssize_t>(sizeof(uint64_t))) {
-        return;
+    // Each event's count, scaled by the share of its group's time on the PMU when groups take
+    // turns: the kernel's estimate of what it would have counted alone.
+    double counts[kMaxCounterEvents]{}; // NOLINT(modernize-avoid-c-arrays)
+    for (int g = 0; g < tc.groups; ++g) {
+        GroupReading reading{};
+        if (::read(tc.fds[tc.group_start[g]], &reading, sizeof(reading)) < static_cast<ssize_t>(3 * sizeof(uint64_t))) {
+            return;
+        }
+        double const scale = reading.time_running == 0 || reading.time_running == reading.time_enabled
+                                 ? (reading.time_running == 0 ? 0.0 : 1.0)
+                                 : static_cast<double>(reading.time_enabled) / static_cast<double>(reading.time_running);
+        auto const   n     = std::min<uint64_t>(reading.nr, static_cast<uint64_t>(tc.group_start[g + 1] - tc.group_start[g]));
+        for (uint64_t i = 0; i < n; ++i) {
+            counts[tc.group_start[g] + static_cast<int>(i)] = static_cast<double>(reading.values[i]) * scale;
+        }
     }
-    auto const n = std::min<uint64_t>(group[0], kNumCounterSlots);
-    for (uint64_t i = 0; i < n; ++i) {
-        values[i] = group[1 + i];
+    std::vector<Slot> slots;
+    {
+        std::scoped_lock const lock(_mutex);
+        slots = _slots;
+    }
+    for (size_t s = 0; s < slots.size() && s < static_cast<size_t>(kNumCounterSlots); ++s) {
+        double sum = 0.0;
+        for (auto const &[event, weight] : slots[s].terms) {
+            if (event >= 0 && event < tc.count) {
+                sum += counts[event] * static_cast<double>(weight);
+            }
+        }
+        // Never below the last reading, so a zone's difference never wraps.
+        values[s]  = std::max(static_cast<uint64_t>(sum), tc.last[s]);
+        tc.last[s] = values[s];
     }
 }
 
 auto PerfCounterBackend::slot_name(int slot) const -> std::string {
-    return slot >= 0 && static_cast<size_t>(slot) < _counters.size() ? _counters[static_cast<size_t>(slot)].name : std::string{};
+    std::scoped_lock const lock(_mutex);
+    return slot >= 0 && static_cast<size_t>(slot) < _slots.size() ? _slots[static_cast<size_t>(slot)].name : std::string{};
 }
 
 auto PerfCounterBackend::why_not() const -> std::string {
     std::scoped_lock const lock(_mutex);
     return _why_not;
+}
+
+namespace {
+
+std::mutex  g_roofline_mutex;
+std::string g_roofline; ///< what the roofline set counts, once chosen
+
+/// The CPU's vendor, family and model, from the first processor in /proc/cpuinfo.
+struct CpuId {
+    std::string vendor;
+    int         family{0};
+    int         model{0};
+};
+
+auto cpu_id() -> CpuId {
+    CpuId         id;
+    std::ifstream in("/proc/cpuinfo");
+    std::string   line;
+    while (std::getline(in, line) && (id.vendor.empty() || id.family == 0 || id.model == 0)) {
+        auto const colon = line.find(':');
+        if (colon == std::string::npos) {
+            continue;
+        }
+        auto key   = line.substr(0, line.find_last_not_of(" \t", colon - 1) + 1);
+        auto value = line.substr(std::min(line.size(), colon + 2));
+        if (key == "vendor_id") {
+            id.vendor = value;
+        } else if (key == "cpu family") {
+            id.family = std::atoi(value.c_str());
+        } else if (key == "model") {
+            id.model = std::atoi(value.c_str());
+        }
+    }
+    return id;
+}
+
+/// Intel cores whose FP_ARITH_INST_RETIRED (event 0xC7) counts packed and scalar FP instructions
+/// by width, one umask bit each, from Broadwell on: server parts and client parts without
+/// efficiency cores, whose PMU is another.
+auto intel_fp_arith(int model) -> bool {
+    static constexpr int kModels[] = {
+        0x3D, 0x47, 0x4F, 0x56,       // Broadwell
+        0x4E, 0x5E, 0x55,             // Skylake, Skylake-SP and its Cascade and Cooper Lake steppings
+        0x8E, 0x9E, 0xA5, 0xA6, 0x66, // Kaby, Coffee, Comet, Cannon Lake
+        0x7D, 0x7E, 0x6A, 0x6C,       // Ice Lake and Ice Lake-SP
+        0x8C, 0x8D, 0xA7,             // Tiger, Rocket Lake
+        0x8F, 0xCF,                   // Sapphire, Emerald Rapids
+        0xAD, 0xAE,                   // Granite Rapids
+    };
+    return std::ranges::find(kModels, model) != std::end(kModels);
+}
+
+} // namespace
+
+auto use_roofline_counters(std::string const &precision, std::string &why_not) -> bool {
+    if (precision != "fp64" && precision != "fp32") {
+        why_not = fmt::format("roofline_precision is \"{}\"; it takes fp64 or fp32", precision);
+        return false;
+    }
+    {
+        // Chosen already, as apply runs again with each change of settings.
+        std::scoped_lock const lock(g_roofline_mutex);
+        if (!g_roofline.empty() && g_roofline.find(fmt::format("({})", precision)) != std::string::npos) {
+            return true;
+        }
+    }
+    auto const cpu = cpu_id();
+    if (cpu.vendor != "GenuineIntel" || cpu.family != 6 || !intel_fp_arith(cpu.model)) {
+        why_not = fmt::format("Waggle knows the FLOP events of Intel cores from Broadwell on, not this CPU's ({} family {} model {:#x}); "
+                              "AMD and Arm wait for their events to be checked on real machines",
+                              cpu.vendor.empty() ? "unknown" : cpu.vendor, cpu.family, cpu.model);
+        return false;
+    }
+    // FP_ARITH_INST_RETIRED umasks, scalar then 128-, 256- and 512-bit packed, with the operations
+    // each instruction does; an FMA already counts twice.
+    bool const     fp64    = precision == "fp64";
+    uint64_t const umask[] = {fp64 ? 0x01U : 0x02U, fp64 ? 0x04U : 0x08U, fp64 ? 0x10U : 0x20U, fp64 ? 0x40U : 0x80U};
+    uint64_t const lanes[] = {1, fp64 ? 2U : 4U, fp64 ? 4U : 8U, fp64 ? 8U : 16U};
+    std::vector<PerfCounterBackend::EventCode> events = {{.type = PERF_TYPE_HARDWARE, .config = PERF_COUNT_HW_CPU_CYCLES},
+                                                         {.type = PERF_TYPE_HARDWARE, .config = PERF_COUNT_HW_INSTRUCTIONS}};
+    PerfCounterBackend::Slot                   flops{.name = precision + "_flops", .terms = {}};
+    for (int i = 0; i < 4; ++i) {
+        flops.terms.emplace_back(static_cast<int>(events.size()), lanes[i]);
+        events.push_back({.type = PERF_TYPE_RAW, .config = (umask[i] << 8) | 0xC7});
+    }
+    events.push_back({.type = PERF_TYPE_HARDWARE, .config = PERF_COUNT_HW_CACHE_MISSES});
+    std::vector<PerfCounterBackend::Slot> slots = {
+        {"cycles", {{0, 1}}}, {"instructions", {{1, 1}}}, std::move(flops), {"llc_miss_bytes", {{6, 64}}}};
+    std::string const description =
+        fmt::format("Linux perf_event: Intel FP_ARITH_INST_RETIRED ({}), and last-level cache misses times 64 bytes as an estimate "
+                    "of DRAM bytes",
+                    precision);
+    auto &backend = dynamic_cast<PerfCounterBackend &>(get_counter_backend());
+    if (!backend.reconfigure(std::move(events), std::move(slots), description)) {
+        why_not = "asked for after threads began counting with the counters source's set; set WAGGLE_SOURCES=roofline in the "
+                  "environment, or configure Waggle before threads record";
+        return false;
+    }
+    std::scoped_lock const lock(g_roofline_mutex);
+    g_roofline = description;
+    return true;
+}
+
+auto roofline_counters() -> std::string {
+    std::scoped_lock const lock(g_roofline_mutex);
+    return g_roofline;
+}
+
+auto multiplexed_threads() -> uint64_t {
+    return g_multiplexed.load(std::memory_order_relaxed);
 }
 
 auto get_counter_backend() -> CounterBackend & {

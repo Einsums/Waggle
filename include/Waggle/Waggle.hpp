@@ -115,6 +115,7 @@ auto apply_settings(SettingsUpdate const &update, Set set) -> int {
     one("trace", update.trace);
     one("sampling_rate", update.sampling_rate);
     one("sampling_callchain", update.sampling_callchain);
+    one("roofline_precision", update.roofline_precision);
     std::vector<char const *> values;
     values.reserve(texts.size());
     for (auto const &text : texts) {
@@ -252,6 +253,7 @@ inline Settings settings() {
     text("trace", s.trace);
     number("sampling_rate", s.sampling_rate);
     flag("sampling_callchain", s.sampling_callchain);
+    text("roofline_precision", s.roofline_precision);
     return s;
 }
 

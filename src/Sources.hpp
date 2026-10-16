@@ -41,6 +41,15 @@ WAGGLE_EXPORT auto status() -> SourceStatus;
 WAGGLE_EXPORT void note_thread(bool opened);
 } // namespace counters
 
+namespace roofline {
+/// The roofline source: each zone's FLOPs and an estimate of its DRAM bytes, from hardware
+/// counters read with the zone's, which it shares with the counters source.
+WAGGLE_EXPORT auto status() -> SourceStatus;
+/// Settings were applied: @p chosen is whether the roofline counters are the process's, and
+/// @p why_not why not when they were asked for.
+WAGGLE_EXPORT void note_choice(bool chosen, std::string why_not);
+} // namespace roofline
+
 namespace energy {
 /// The energy source: each zone's energy, sampled from the platform's per-thread estimate (macOS).
 WAGGLE_EXPORT auto status() -> SourceStatus;

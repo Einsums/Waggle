@@ -87,6 +87,17 @@ else()
   message(STATUS "Waggle: the Perfetto test needs Python with the perfetto package; not run")
 endif()
 
+# The roofline source: groups split and summed into slots, anywhere; then, asked for in the
+# environment, FLOPs against loops that do a known number; where the PMU or the CPU's events are
+# missing it says why and skips (Catch2's exit code 4).
+add_executable(waggle_Roofline_test unit/Roofline.cpp)
+target_link_libraries(waggle_Roofline_test PRIVATE Waggle::internal Catch2::Catch2WithMain)
+add_dependencies(waggle_tests waggle_Roofline_test)
+add_test(NAME ${WAGGLE_TEST_PREFIX}Roofline COMMAND waggle_Roofline_test "[backend]")
+set_tests_properties(${WAGGLE_TEST_PREFIX}Roofline PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false" TIMEOUT 300 SKIP_RETURN_CODE 4)
+add_test(NAME ${WAGGLE_TEST_PREFIX}RooflineSource COMMAND waggle_Roofline_test "[source]")
+set_tests_properties(${WAGGLE_TEST_PREFIX}RooflineSource PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false;WAGGLE_SOURCES=roofline" TIMEOUT 300 SKIP_RETURN_CODE 4)
+
 # The energy source, asked for in the environment; where there is no per-thread energy it checks
 # the source says why, and skips (Catch2's exit code 4).
 add_executable(waggle_Energy_test unit/Energy.cpp)

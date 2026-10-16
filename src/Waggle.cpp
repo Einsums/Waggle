@@ -200,7 +200,19 @@ Profiler::Profiler() : _consumer(std::make_unique<Consumer>(_strings, _sites)) {
 
 void Profiler::apply(Settings const &s) {
     set_enabled(s.record);
-    _counters_wanted.store(source_requested(s, "counters"), std::memory_order_release);
+    // The roofline source counts through the counters' groups, with a set of its own chosen before
+    // any thread opens them: threads count when either is asked for.
+    bool        roofline = false;
+    std::string roofline_why;
+    if (source_requested(s, "roofline")) {
+#ifdef __linux__
+        roofline = use_roofline_counters(s.roofline_precision, roofline_why);
+#else
+        roofline_why = "this platform has no public FLOP counters (macOS) or no backend for them yet";
+#endif
+    }
+    roofline::note_choice(roofline, roofline_why);
+    _counters_wanted.store(source_requested(s, "counters") || roofline, std::memory_order_release);
     _signposts_wanted.store(source_requested(s, "signposts"), std::memory_order_release);
     // Energy is sampled by the consumer for every recording thread, whenever it was asked for.
     std::string why_not;

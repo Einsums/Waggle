@@ -221,7 +221,18 @@ def _merge_into(total: ProfileNode, node: ProfileNode) -> None:
             total.annotations[key] = merged
         else:
             total.annotations[key] = value
-    total.counters.update(node.counters)
+    # Counters add up, as times do; each call's least and most are the least and most of all.
+    for name, value in node.counters.items():
+        old = total.counters.get(name)
+        if isinstance(value, dict) and isinstance(old, dict):
+            merged = dict(old)
+            merged["total"] = old.get("total", 0) + value.get("total", 0)
+            for stat, combine in (("min", min), ("max", max)):
+                if stat in value:
+                    merged[stat] = combine(old[stat], value[stat]) if stat in old else value[stat]
+            total.counters[name] = merged
+        else:
+            total.counters[name] = value
 
 
 def aggregate_flat(nodes: list[ProfileNode]) -> list[ProfileNode]:

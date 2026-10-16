@@ -95,6 +95,30 @@ Worksharing chunks and explicit tasks are not recorded: a loop of many small chu
 Regions are named from the code address of the call into the runtime, using the module's symbol table, so functions with hidden visibility are named too.
 A region that shares nothing with its function and comes last in it can be compiled as a jump into the runtime, and is then named after the function's caller.
 
+roofline
+========
+
+Each zone's floating-point operations and an estimate of the bytes it moved to and from DRAM, on Linux, from hardware counters read as the zone opens and closes.
+
+.. code-block:: console
+
+    $ WAGGLE_SOURCES=roofline WAGGLE_SAVE=run.json ./myprogram
+    $ waggle cpu run.json
+
+``waggle cpu`` gives each counted zone its GFLOP/s, its estimated GB/s and its arithmetic intensity (FLOPs per byte), over its inclusive time: the counters include what the zone's children did.
+
+* **FLOPs** come from Intel's ``FP_ARITH_INST_RETIRED`` events, one for scalar instructions and one for each width of packed ones, weighted by the operations each does (a 512-bit FMA of doubles is 16) and summed as they are read, so a zone's count is exact.
+  ``roofline_precision`` picks double (``fp64``, the default) or single (``fp32``).
+  Intel cores from Broadwell on are known, servers and client parts without efficiency cores; the events of AMD and Arm cores wait to be checked on real machines, and until then the source says it is unavailable there.
+* **Bytes** are last-level cache misses times 64, per thread: an estimate, exact in whom it credits but low for streaming code, as lines the hardware prefetches are not misses.
+  A zone that streams 512 MB counts roughly half of it.
+
+The source shares each thread's counter group with ``counters``: with both asked for, a zone carries cycles and instructions beside the FLOPs and bytes, and not the counters source's cache and branch misses.
+A group holds cycles, instructions and five more events; where the PMU cannot hold them at once (four general counters per thread with hyper-threading on), it is split in two, which take turns, and the counts are scaled by the time each ran, as ``perf`` does.
+The status then says so, as short zones carry more error.
+The counters are chosen before any thread opens them, so ask for the source in the environment, or configure Waggle before threads record.
+Reading costs a zone what ``counters`` does, a system call as it opens and as it closes.
+
 sampling
 ========
 

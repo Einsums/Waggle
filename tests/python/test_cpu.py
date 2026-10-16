@@ -60,7 +60,7 @@ def test_zones_are_ranked_by_their_share_of_the_samples():
     assert [(z["name"], z["samples"], z["samples_pct"]) for z in data["zones"]] == [("contract", 650, 65.0), ("solve", 250, 25.0)]
     contract = data["zones"][0]
     assert contract["calls"] == 50
-    assert contract["time_ms"] == {"exclusive": 750.0}
+    assert contract["time_ms"] == {"exclusive": 750.0, "inclusive": 750.0}
     assert not contract["low_confidence"]
     assert data["no_zone"] == {"samples": 100, "samples_pct": 10.0}
 
@@ -105,6 +105,7 @@ def test_a_session_without_samples_says_how_to_record_them(tmp_path):
         ("void ns::f<int, long>(int) const", "ns::f<int, long>"),
         ("std::__new_allocator<unsigned long>::allocate(unsigned long, void const*)", "std::__new_allocator<unsigned long>::allocate"),
         ("Foo::operator()(int) const [clone .cold]", "Foo::operator()"),
+        ("operator()", "operator()"),
         ("main", "main"),
     ],
 )
@@ -211,3 +212,39 @@ def test_caller_lines_credit_a_librarys_samples_to_the_lines_that_called_it():
         (40, "dgemm_kernel", 75, 37.5),
         (41, "dgemm_kernel", 25, 12.5),
     ]
+
+
+def _counted(name: str, ms: float, flops: int, nbytes: int) -> dict:
+    zone = _zone(name, ms, 1)
+    zone["counters"] = {"fp64_flops": {"total": flops}, "llc_miss_bytes": {"total": nbytes}, "cycles": {"total": 1}}
+    return zone
+
+
+def test_the_roofline_counters_give_each_zone_its_rates_without_samples():
+    session = {
+        "format": "waggle-session",
+        "version": 1,
+        "label": "counted",
+        "threads": {
+            "1": {"name": "main", "children": [_counted("contract", 500.0, 2_000_000_000, 100_000_000)]},
+            "2": {"name": "worker", "children": [_counted("contract", 500.0, 2_000_000_000, 100_000_000), _zone("idle", 900.0, 1)]},
+        },
+    }
+    data = cpu.summary(session_from_dict(session, "s0"))
+    assert data["sampling"] is None and "no_zone" not in data
+    assert [z["name"] for z in data["zones"]] == ["contract"]  # "idle" has no counters
+    zone = data["zones"][0]
+    # Both threads' counts, over both threads' time: 4 GFLOP in 1 s, 200 MB in 1 s.
+    assert zone["compute"] == {"flops": 4_000_000_000, "gflops": 4.0, "precision": "fp64"}
+    assert zone["memory"] == {"bytes": 200_000_000, "gbs": 0.2, "source": "llc_misses"}
+    assert zone["intensity"] == 20.0
+
+
+def test_flat_zones_sum_their_counters_over_threads():
+    from waggle.analysis import aggregate_flat
+    from waggle.model import parse_node
+
+    a = parse_node({"name": "z", "call_count": 1, "counters": {"cycles": {"total": 10, "min": 4, "max": 6}}})
+    b = parse_node({"name": "z", "call_count": 1, "counters": {"cycles": {"total": 30, "min": 2, "max": 9}}})
+    merged = aggregate_flat([a, b])[0]
+    assert merged.counters["cycles"] == {"total": 40, "min": 2, "max": 9}

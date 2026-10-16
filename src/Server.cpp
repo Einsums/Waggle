@@ -124,10 +124,10 @@ std::string sources_json() {
     return out + "]";
 }
 
-/// The counters zones carry, by name: none unless the counters source is active.
+/// The counters zones carry, by name: none unless the counters or roofline source is active.
 std::string counters_json() {
     std::string out = "[";
-    if (counters::status().state == "active") {
+    if (counters::status().state == "active" || roofline::status().state == "active") {
         auto const &backend = get_counter_backend();
         for (int i = 0; i < kNumCounterSlots; ++i) {
             if (auto const name = backend.slot_name(i); !name.empty()) {

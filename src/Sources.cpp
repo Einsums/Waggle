@@ -8,6 +8,7 @@
 #include <fmt/format.h>
 
 #include <atomic>
+#include <mutex>
 
 #include "CounterBackend.hpp"
 #include "Duplicates.hpp"
@@ -36,7 +37,7 @@ auto source_requested(Settings const &settings, std::string_view name) -> bool {
 }
 
 auto source_statuses() -> std::vector<SourceStatus> {
-    return {counters::status(), energy::status(), ompt::status(), sampling::status(), signposts::status()};
+    return {counters::status(), energy::status(), ompt::status(), roofline::status(), sampling::status(), signposts::status()};
 }
 
 namespace {
@@ -88,9 +89,52 @@ void note_thread(bool opened) {
 
 auto status() -> SourceStatus {
     auto const &backend = get_counter_backend();
-    return thread_source_status("counters", g_counter_threads, backend.describe(), backend.why_not());
+    auto        status  = thread_source_status("counters", g_counter_threads, backend.describe(), backend.why_not());
+    if (status.state == "active" && roofline::status().state == "active") {
+        status.detail += "; cycles and instructions only, as the roofline source takes the cache- and branch-miss counters";
+    }
+    return status;
 }
 } // namespace counters
+
+namespace {
+std::mutex  g_roofline_choice_mutex;
+bool        g_roofline_chosen = false;
+std::string g_roofline_why_not;
+} // namespace
+
+namespace roofline {
+void note_choice(bool chosen, std::string why_not) {
+    std::scoped_lock const lock(g_roofline_choice_mutex);
+    g_roofline_chosen  = chosen;
+    g_roofline_why_not = std::move(why_not);
+}
+
+auto status() -> SourceStatus {
+    SourceStatus status{.name = "roofline", .state = "off", .detail = ""};
+    if (collector_inactive() || Profiler::gone() || !source_requested(Profiler::instance().settings(), "roofline")) {
+        return status;
+    }
+    {
+        std::scoped_lock const lock(g_roofline_choice_mutex);
+        if (!g_roofline_chosen) {
+            status.state  = "unavailable";
+            status.detail = g_roofline_why_not;
+            return status;
+        }
+    }
+    auto const &backend = get_counter_backend();
+    std::string detail  = backend.describe();
+#ifdef __linux__
+    if (auto const n = multiplexed_threads(); n > 0) {
+        detail += fmt::format("; {} thread(s) have more events than the PMU holds at once, so their counts are multiplexed and "
+                              "scaled, and short zones carry more error",
+                              n);
+    }
+#endif
+    return thread_source_status("roofline", g_counter_threads, detail, backend.why_not());
+}
+} // namespace roofline
 
 namespace energy {
 auto status() -> SourceStatus {

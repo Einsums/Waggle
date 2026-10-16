@@ -36,6 +36,7 @@ struct Settings {
     std::string  trace{};            ///< Write every zone to a Perfetto trace here (``{pid}`` becomes the process id); empty for none.
     std::int64_t sampling_rate{997}; ///< Samples per second per thread, for the ``sampling`` source.
     bool sampling_callchain{true};   ///< Record each sample's call chain, so time in libraries is credited to the line that called them.
+    std::string roofline_precision{"fp64"}; ///< Which FLOPs the ``roofline`` source counts: ``fp64`` or ``fp32``.
 };
 
 /// Some settings to change; an empty member leaves that setting alone.
@@ -55,6 +56,7 @@ struct SettingsUpdate {
     std::optional<std::string>  trace;
     std::optional<std::int64_t> sampling_rate;
     std::optional<bool>         sampling_callchain;
+    std::optional<std::string>  roofline_precision;
 };
 
 /// How much a profiler message matters.

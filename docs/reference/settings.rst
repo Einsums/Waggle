@@ -64,7 +64,7 @@ Every setting by name (as ``waggle_config_set``, ``waggle.configure`` and ``wagg
     * - ``sources``
       - ``WAGGLE_SOURCES``
       - empty
-      - Optional instruments to turn on, comma-separated: ``counters``, ``energy``, ``openmp``, ``sampling``, ``signposts``.
+      - Optional instruments to turn on, comma-separated: ``counters``, ``energy``, ``openmp``, ``roofline``, ``sampling``, ``signposts``.
     * - ``trace``
       - ``WAGGLE_TRACE``
       - empty
@@ -73,6 +73,10 @@ Every setting by name (as ``waggle_config_set``, ``waggle.configure`` and ``wagg
       - ``WAGGLE_SAMPLING_RATE``
       - ``997``
       - Samples per second per thread, for the ``sampling`` source; at most ``kernel.perf_event_max_sample_rate``.
+    * - ``roofline_precision``
+      - ``WAGGLE_ROOFLINE_PRECISION``
+      - ``fp64``
+      - Which FLOPs the ``roofline`` source counts: ``fp64`` or ``fp32``.
     * - ``sampling_callchain``
       - ``WAGGLE_SAMPLING_CALLCHAIN``
       - ``true``

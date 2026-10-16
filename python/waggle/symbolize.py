@@ -41,7 +41,10 @@ def short_name(name: str) -> str:
         for i in range(len(name) - 1, -1, -1):
             depth += {")": 1, "(": -1}.get(name[i], 0)
             if depth == 0:
-                name = name[:i]
+                # "operator()" alone, as addr2line names an inlined lambda body: the parentheses
+                # are the name, not an argument list.
+                if not name[:i].endswith("operator"):
+                    name = name[:i]
                 break
     # The return type is whatever comes before the last space outside brackets.
     depth = 0

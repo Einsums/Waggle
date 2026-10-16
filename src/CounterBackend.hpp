@@ -18,12 +18,23 @@ WAGGLE_NAMESPACE_BEGIN
 /// Number of hardware counter slots per event.
 static constexpr int kNumCounterSlots = 4;
 
+/// Hardware events a thread may open, across its groups.
+static constexpr int kMaxCounterEvents = 8;
+
 /// One thread's open counters. Kept in the thread's channel, not in the backend, so a backend has
 /// no per-thread state of its own and a test can count with a second one beside the process's.
 struct ThreadCounters {
-    int  fds[kNumCounterSlots] = {-1, -1, -1, -1}; // NOLINT(modernize-avoid-c-arrays): Linux perf's, the group leader first
-    int  count                 = 0;                ///< counters opened
-    bool open                  = false;
+    // NOLINTBEGIN(modernize-avoid-c-arrays)
+    int fds[kMaxCounterEvents] = {-1, -1, -1, -1, -1, -1, -1, -1}; ///< Linux perf's, each group's leader first
+    int group_start[3]         = {0, 0, 0};                        ///< where each group's events begin in fds; the last is the end
+    // NOLINTEND(modernize-avoid-c-arrays)
+    int  groups      = 0; ///< event groups opened: 2 when the events did not fit the PMU at once
+    int  count       = 0; ///< events opened
+    bool open        = false;
+    bool multiplexed = false; ///< whether the groups share the PMU in turns, and readings are scaled
+    /// Each slot's last reading: a scaled reading can come out a little under the one before, and
+    /// a zone's counters are differences.
+    mutable std::array<uint64_t, kNumCounterSlots> last{};
 };
 
 /**
@@ -68,6 +79,19 @@ class NoopCounterBackend : public CounterBackend {
 };
 
 #ifdef __linux__
+/// Use the roofline source's counters in every thread that opens them from now on: cycles,
+/// instructions, FLOPs and last-level cache misses (as bytes), in place of the counters source's
+/// cycles, instructions, cache and branch misses. @p precision is "fp64" or "fp32". False, with
+/// @p why_not set, when this CPU's FLOP events are not known, or a thread opened its counters
+/// already: the set is the process's, so it is chosen before any thread counts.
+WAGGLE_EXPORT auto use_roofline_counters(std::string const &precision, std::string &why_not) -> bool;
+
+/// Whether the process's counters are the roofline set, and what they count, for its status.
+WAGGLE_EXPORT auto roofline_counters() -> std::string;
+
+/// Threads whose counter groups did not fit the PMU at once, and are multiplexed.
+WAGGLE_EXPORT auto multiplexed_threads() -> uint64_t;
+
 /// Why perf_event_open failed with @p error, in terms a person can act on: the sysctl to change, a
 /// container's seccomp profile, or a machine with no counters. The counters and sampling sources'.
 WAGGLE_EXPORT auto perf_refusal(int error) -> std::string;
@@ -82,23 +106,52 @@ class WAGGLE_EXPORT PerfCounterBackend : public CounterBackend {
         uint64_t    config;
     };
 
+    /// An event to open, without a name of its own: perf_event_attr's type and config.
+    struct EventCode {
+        uint32_t type;
+        uint64_t config;
+    };
+
+    /// What a slot reports: a sum of events, each times its weight (FLOPs: scalar + 2 x 128-bit +
+    /// 4 x 256-bit + 8 x 512-bit), by index into the events. A zone's slot is then the same sum of
+    /// its events' differences.
+    struct Slot {
+        std::string                           name;
+        std::vector<std::pair<int, uint64_t>> terms;
+    };
+
     /// The hardware counters: cycles, instructions, cache misses, branch misses.
     PerfCounterBackend();
     /// @p counters, at most kNumCounterSlots: software ones (task-clock) count where a virtual
     /// machine has no hardware counters, as in CI.
     explicit PerfCounterBackend(std::vector<Counter> counters);
+    /// @p events, at most kMaxCounterEvents, reported as @p slots, at most kNumCounterSlots. The
+    /// events are opened as one group, read in one system call; when the PMU cannot hold them at
+    /// once, as two, which it multiplexes. @p split_after, for tests, splits them after that many
+    /// events whether or not they fit.
+    PerfCounterBackend(std::vector<EventCode> events, std::vector<Slot> slots, int split_after = 0);
+
+    /// Count @p events as @p slots from the next thread that opens on. False if a thread opened
+    /// already, as zones' readings must keep one meaning.
+    auto reconfigure(std::vector<EventCode> events, std::vector<Slot> slots, std::string description) -> bool;
 
     auto               open(ThreadCounters &counters) -> bool override;
     void               close(ThreadCounters &counters) override;
     void               read(ThreadCounters const &counters, std::array<uint64_t, kNumCounterSlots> &values) override;
     [[nodiscard]] auto slot_name(int slot) const -> std::string override;
     [[nodiscard]] auto why_not() const -> std::string override;
-    [[nodiscard]] auto describe() const -> std::string override { return "Linux perf_event"; }
+    [[nodiscard]] auto describe() const -> std::string override;
 
   private:
-    std::vector<Counter> _counters;
-    mutable std::mutex   _mutex; // threads open their counters concurrently
-    std::string          _why_not;
+    auto open_group(ThreadCounters &counters, int first, int end) -> bool;
+
+    std::vector<EventCode> _events;
+    std::vector<Slot>      _slots;
+    int                    _split_after{0};
+    std::string            _description{"Linux perf_event"};
+    bool                   _opened{false}; ///< whether any thread opened, which fixes the set
+    mutable std::mutex     _mutex;         // threads open their counters concurrently
+    std::string            _why_not;
 };
 #endif
 
