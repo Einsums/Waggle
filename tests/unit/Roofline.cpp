@@ -124,6 +124,10 @@ TEST_CASE("Events that do not fit one group are read as two, and each slot is it
     CHECK(twice / once < 2.1);
     CHECK(backend.slot_name(1) == "twice");
 }
+#else
+TEST_CASE("Events that do not fit one group are read as two, and each slot is its weighted sum", "[backend]") {
+    SKIP("the roofline source's counter groups are Linux perf_event's");
+}
 #endif
 
 #if defined(__x86_64__)

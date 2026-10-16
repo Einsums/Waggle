@@ -61,6 +61,13 @@ def short_name(name: str) -> str:
 KERNEL_START = 0xFFFF_8000_0000_0000
 
 
+def has_file(module: str) -> bool:
+    """Whether @p module, as the collector names it, is a file: its path has a directory in it.
+    Code the kernel or a loader made (the vDSO's "linux-vdso.so.1") has a name and no directory.
+    Not Path.is_absolute, which on Windows wants a drive letter the session's Linux paths lack."""
+    return "/" in module or "\\" in module
+
+
 @dataclass(frozen=True)
 class Frame:
     function: str
@@ -93,7 +100,7 @@ class Location:
         if self.module:
             # Code with no file (the vDSO) cannot be named closer than its module, so its samples
             # are counted together; a file's unnamed code keeps its offset, to look up by hand.
-            if not Path(self.module).is_absolute():
+            if not has_file(self.module):
                 return f"[{self.module}]"
             return f"{Path(self.module).name}+{self.offset:#x}"
         if self.address >= KERNEL_START:
@@ -122,7 +129,7 @@ def _tool() -> tuple[str, list[str]] | None:
 def module_problem(module: dict[str, Any]) -> str:
     """Why @p module's file cannot be read for the run that recorded it; empty if it can."""
     path = Path(module.get("path", ""))
-    if not path.is_absolute():
+    if not has_file(str(module.get("path", ""))):
         return "no file (code the kernel or a loader made)"
     if not path.is_file():
         return "the file is gone"
