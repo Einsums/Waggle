@@ -42,7 +42,7 @@ Each zone's hardware counters, read as it opens and as it closes:
   A virtual Mac has no counters, and says so.
 * **Windows**: none yet.
 
-On x86-64 Linux a thread reads its counters in user space, with ``rdpmc``, about 30 ns a reading, so a counted zone costs about 100 ns against about 20 for an uncounted one (Xeon 6972P).
+On x86-64 Linux a thread reads its counters in user space, with ``rdpmc``, about 30 ns a reading, so a counted zone costs about 90 ns against about 20 for an uncounted one (Xeon 6972P, a node to itself).
 Where the kernel does not allow that (``/sys/bus/event_source/devices/cpu/rdpmc`` at 0, software events), when the counters share the PMU in turns, or for a moment when the kernel has moved one off it, a reading is a system call, a few hundred nanoseconds, and a counted zone costs about 800 ns; the status says which.
 On macOS a reading is a system call, about 100 ns on an M4, so a counted zone costs about 200 ns.
 That suits zones that last microseconds or more.
@@ -97,7 +97,7 @@ A block's placement is kept each time it changes, so the session shows when page
 * **Thread migration**: a thread ran on another node with a zone still open; bind threads (``OMP_PROC_BIND=close``, ``OMP_PLACES=cores``).
 * **No huge pages**: a block of 1 GB or more with under 10% of its pages huge.
 
-With the source on, each thread writes a zone's opening as it happens, as with ``sampling``, so the zone open on a thread is known when it moves.
+With the source on, each thread writes a zone's opening as it happens, as with ``sampling``, so the zone open on a thread is known when it moves: about 33 ns a zone rather than 20 on a Xeon 6972P.
 A block freed without ``WAGGLE_MEM_FREE`` is seen as gone once its pages are unmapped, not as untouched.
 On a machine of one node the source says it is unavailable.
 
@@ -167,7 +167,7 @@ The source shares each thread's counter group with ``counters``: with both asked
 A group holds cycles, instructions and five more events; where the PMU cannot hold them at once (four general counters per thread with hyper-threading on), it is split in two, which take turns, and the counts are scaled by the time each ran, as ``perf`` does.
 The status then says so, as short zones carry more error.
 The counters are chosen before any thread opens them, so ask for the source in the environment, or configure Waggle before threads record.
-Reading costs a zone what ``counters`` does, as it opens and as it closes: in user space when the group fits the PMU, and a system call when it is split.
+Reading costs a zone what ``counters`` does, as it opens and as it closes: in user space when the group fits the PMU, about 115 ns a zone on a Xeon 6972P for its seven events, and a system call when it is split.
 
 sampling
 ========
@@ -192,7 +192,8 @@ What that means for the numbers:
   The fix is a longer run, not a faster rate.
 * Samples lost to a full ring are counted, and the status gives the count.
 
-With the source on, each thread writes a zone's opening as it happens, so the consumer knows which zones are open when it reads a sample; a zone with nothing inside then costs two events rather than one.
+With the source on, each thread writes a zone's opening as it happens, so the consumer knows which zones are open when it reads a sample; a zone with nothing inside then costs two events rather than one, about 33 ns rather than 20 on a Xeon 6972P.
+The sampling itself costs the program next to nothing: at 997 Hz it slowed a 4.6 ms busy loop by under 0.1%, within the run-to-run spread.
 The consumer's own thread is not sampled.
 ``waggle cpu`` ranks zones by their share of the samples, each with its hottest source lines.
 ``--zone NAME --lines`` lists every line and function of one zone with samples, ``--zone NAME --asm`` the machine code of its hottest function with the samples on each instruction (``--line N`` picks the function holding line N and marks its instructions), and ``--zone NAME`` alone its samples by address.
