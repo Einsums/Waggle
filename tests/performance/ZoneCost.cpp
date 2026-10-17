@@ -540,6 +540,6 @@ TEST_CASE("Bench ZoneCost: a busy loop", "[Profile][ZoneCost][benchmark]") {
     }
     std::ranges::sort(ms);
     char const *sources = std::getenv("WAGGLE_SOURCES"); // NOLINT(concurrency-mt-unsafe)
-    fmt::println("[ZoneCost busy loop, sources: {:<10s}] min {:7.3f} ms   median {:7.3f} ms", sources && *sources ? sources : "none", ms.front(),
-                 ms[ms.size() / 2]);
+    fmt::println("[ZoneCost busy loop, sources: {:<10s}] min {:7.3f} ms   median {:7.3f} ms", sources && *sources ? sources : "none",
+                 ms.front(), ms[ms.size() / 2]);
 }
