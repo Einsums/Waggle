@@ -111,62 +111,38 @@ def describe_signpost_traffic(tmp: Path) -> None:
         print(f"signposts: {n:>9}  {process}  {subsystem}")
 
 
-def record(program: str, trace: Path, attempt: int) -> int | None:
-    """Record the program with the Logging template: 0 when it recorded, 1 when the program or
-    xctrace failed, None when xctrace never finished. xctrace attaches to the program, which waits
-    until xctrace says it records (see SignpostsProgram.cpp), so no zone runs before it does."""
-    recording = f"org.einsums.waggle.signposts.{os.getpid()}.{attempt}"
-    env = dict(os.environ, WAGGLE_SOURCES="signposts", WAGGLE_REPORT="false", SIGNPOSTS_RECORDING=recording)
-    target = subprocess.Popen([program], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    try:
-        if target.stdout.readline().strip() != "signposts: ready":
-            target.wait()
-            print(f"signposts: the program did not start listening for xctrace (exit {target.returncode})")
-            return 1
-        run = subprocess.Popen(
-            ["xcrun", "xctrace", "record", "--template", "Logging", "--output", str(trace),
-             "--notify-tracing-started", recording, "--attach", str(target.pid)],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        )  # fmt: skip
-        try:
-            stdout, stderr = run.communicate(timeout=120)
-        except subprocess.TimeoutExpired:
-            # A hang waiting for a developer-tools authorization stops before it records
-            # (DevToolsSecurity -enable gives it). CI has also hung after the program exited,
-            # while xctrace ended the recording; what it was doing is printed here.
-            print(f"signposts: xctrace did not finish recording in 120 s (attempt {attempt})")
-            describe_hang(run.pid, trace)
-            run.kill()
-            stdout, stderr = run.communicate()
-            print(stdout, stderr, sep="\n")
-            return None
-        output = target.stdout.read()
-        if target.wait() != 0 or run.returncode != 0 or not trace.exists():
-            print(output, stdout, stderr, sep="\n")
-            return 1
-        return 0
-    finally:
-        if target.poll() is None:
-            target.kill()
-            target.wait()
-
-
 def main(program: str) -> int:
     with tempfile.TemporaryDirectory() as tmp:
         trace = Path(tmp) / "signposts.trace"
         # Two ways a recording fails that are xctrace's, not the program's, and CI's virtual Macs
         # show both now and then: it never ends, or it ends cleanly having lost the program's
-        # signposts, every one or some, to another process's busy stream of them. Either gets
+        # signposts, every one or some. They are lost when the logging stream attaches after the
+        # program has emitted them, or to another process's busy stream of signposts. Either gets
         # one more try. A recording that captured the program but got it wrong is checked below
         # and fails at once, and so does a second empty one; both say what else was emitting.
         found: list[dict] = []
         for attempt in (1, 2):
             if trace.exists():
                 shutil.rmtree(trace)
-            status = record(program, trace, attempt)
-            if status is None:
+            run = subprocess.Popen(
+                ["xcrun", "xctrace", "record", "--template", "Logging", "--output", str(trace),
+                 "--env", "WAGGLE_SOURCES=signposts", "--env", "WAGGLE_REPORT=false", "--launch", "--", program],
+                env=dict(os.environ), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )  # fmt: skip
+            try:
+                stdout, stderr = run.communicate(timeout=120)
+            except subprocess.TimeoutExpired:
+                # A hang waiting for a developer-tools authorization stops before the program
+                # launches (DevToolsSecurity -enable gives it). CI has also hung after the program
+                # exited, while xctrace ended the recording; what it was doing is printed here.
+                print(f"signposts: xctrace did not finish recording in 120 s (attempt {attempt})")
+                describe_hang(run.pid, trace)
+                run.kill()
+                stdout, stderr = run.communicate()
+                print(stdout, stderr, sep="\n")
                 continue
-            if status != 0:
+            if run.returncode != 0 or not trace.exists():
+                print(stdout, stderr, sep="\n")
                 return 1
             found = [r for r in signposts(trace) if r.get("subsystem") == "waggle"]
             if found:

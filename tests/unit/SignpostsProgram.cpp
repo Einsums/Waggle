@@ -10,8 +10,8 @@
 
 #include <chrono>
 #include <cstdio>
-#include <cstdlib>
-#include <notify.h>
+#include <os/log.h>
+#include <os/signpost.h>
 #include <string>
 #include <thread>
 
@@ -24,28 +24,16 @@ void nap() {
 } // namespace
 
 int main() {
-    // Zones emitted before xctrace records are lost, and nothing in the process can tell when it
-    // does: os_signpost_enabled is true whether or not anyone records. So the test names a Darwin
-    // notification in SIGNPOSTS_RECORDING, which xctrace posts once it records (--notify-tracing-started),
-    // and the program waits for it. "ready" says it is listening, so the test attaches only then.
-    if (char const *recording = std::getenv("SIGNPOSTS_RECORDING")) {
-        int token  = 0;
-        int posted = 0;
-        notify_register_check(recording, &token);
-        notify_check(token, &posted); // the first check after registering always says posted
-        std::printf("signposts: ready\n");
-        std::fflush(stdout);
-        posted = 0;
-        for (int i = 0; i < 9000 && posted == 0; ++i) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            notify_check(token, &posted);
-        }
-        notify_cancel(token);
-        if (posted == 0) {
-            std::printf("signposts: xctrace never said it was recording\n");
-            return 1;
-        }
+    // xctrace launches the program a moment before it records, and zones emitted before then are lost.
+    // Where signposts are off until something records, this waits for that; on a Mac as it ships they
+    // are always on, so it returns at once and says nothing about xctrace.
+    os_log_t const probe = os_log_create("waggle", "sptest_a");
+    for (int i = 0; i < 500 && !os_signpost_enabled(probe); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
+    // So the wait for xctrace is this. xctrace's "tracing started" notification is no better: on CI's
+    // virtual Macs it comes before the logging stream has attached.
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
     static waggle::ZoneSite const outer{"signpost outer", __FILE__, __LINE__, "main", "sptest_a"};
     static waggle::ZoneSite const inner{"signpost inner", __FILE__, __LINE__, "main", "sptest_b"};
     for (int i = 0; i < 2; ++i) {
