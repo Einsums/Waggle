@@ -52,6 +52,29 @@ def signposts(trace: Path) -> list[dict]:
     return out
 
 
+def describe_hang(pid: int, trace: Path) -> None:
+    """What a recording that will not end is doing: xctrace's processes, a few seconds of each one's
+    stacks, and how far the trace bundle got. Sampling xctrace needs root on a runner, which CI has
+    without a password; elsewhere sample runs as the user and may be refused."""
+    pids = [pid]
+    for parent in pids:
+        children = subprocess.run(["pgrep", "-P", str(parent)], capture_output=True, text=True).stdout.split()
+        pids.extend(int(child) for child in children)
+    listing = ["ps", "-o", "pid,ppid,stat,etime,time,command", "-p", ",".join(map(str, pids))]
+    print(subprocess.run(listing, capture_output=True, text=True).stdout)
+    sudo = ["sudo", "-n"] if subprocess.run(["sudo", "-n", "true"], capture_output=True).returncode == 0 else []
+    for each in pids:
+        sampled = subprocess.run([*sudo, "sample", str(each), "3"], capture_output=True, text=True, timeout=60)
+        print(f"signposts: stacks of process {each}")
+        print(sampled.stdout, sampled.stderr, sep="\n")
+    if trace.exists():
+        files = sorted(trace.rglob("*"))
+        size = sum(f.stat().st_size for f in files if f.is_file())
+        print(f"signposts: the trace bundle holds {len(files)} entries, {size} bytes")
+    else:
+        print("signposts: no trace bundle was written")
+
+
 def main(program: str) -> int:
     with tempfile.TemporaryDirectory() as tmp:
         trace = Path(tmp) / "signposts.trace"
@@ -64,19 +87,25 @@ def main(program: str) -> int:
         for attempt in (1, 2):
             if trace.exists():
                 shutil.rmtree(trace)
+            run = subprocess.Popen(
+                ["xcrun", "xctrace", "record", "--template", "Logging", "--output", str(trace),
+                 "--env", "WAGGLE_SOURCES=signposts", "--env", "WAGGLE_REPORT=false", "--launch", "--", program],
+                env=dict(os.environ), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )  # fmt: skip
             try:
-                run = subprocess.run(
-                    ["xcrun", "xctrace", "record", "--template", "Logging", "--output", str(trace),
-                     "--env", "WAGGLE_SOURCES=signposts", "--env", "WAGGLE_REPORT=false", "--launch", "--", program],
-                    env=dict(os.environ), capture_output=True, text=True, timeout=120,
-                )  # fmt: skip
-            except subprocess.TimeoutExpired as exc:
-                # Usually waiting for an authorization to use developer tools (DevToolsSecurity -enable gives it).
-                print(f"signposts: xctrace did not finish recording in {exc.timeout} s (attempt {attempt})")
-                print(exc.stdout or "", exc.stderr or "", sep="\n")
+                stdout, stderr = run.communicate(timeout=120)
+            except subprocess.TimeoutExpired:
+                # A hang waiting for a developer-tools authorization stops before the program
+                # launches (DevToolsSecurity -enable gives it). CI has also hung after the program
+                # exited, while xctrace ended the recording; what it was doing is printed here.
+                print(f"signposts: xctrace did not finish recording in 120 s (attempt {attempt})")
+                describe_hang(run.pid, trace)
+                run.kill()
+                stdout, stderr = run.communicate()
+                print(stdout, stderr, sep="\n")
                 continue
             if run.returncode != 0 or not trace.exists():
-                print(run.stdout, run.stderr, sep="\n")
+                print(stdout, stderr, sep="\n")
                 return 1
             found = [r for r in signposts(trace) if r.get("subsystem") == "waggle"]
             if found:
