@@ -90,7 +90,9 @@ jobs:
         with:
           environment-file: environment.yml
           activate-environment: waggle-dev
-          miniforge-version: latest
+          # 26.9.4-0's `conda init` fails on Windows ("needs sudo" for Scripts\conda.exe).
+          # Back to latest once conda-forge/miniforge#913 is fixed.
+          miniforge-version: 26.7.2-1
 
       - name: Configure
         # A per-configuration output directory, as a parent project like Einsums sets, must not
