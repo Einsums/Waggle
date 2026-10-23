@@ -74,7 +74,9 @@ void require_roofline() {
     }
 }
 
-#if defined(__x86_64__)
+// Windows has no counter backend, so these cases could only skip there; and clang-cl turns
+// __builtin_cpu_supports into a reference to compiler-rt's __cpu_model, which its link never brings.
+#if defined(__x86_64__) && !defined(_WIN32)
 // N fused multiply-adds of doubles, each 2 FLOPs, written in assembly so the count is exact.
 [[gnu::noinline, gnu::target("fma")]] void scalar_fmas(long n) {
     double a = 1.0;
@@ -187,7 +189,7 @@ TEST_CASE("Events that do not fit one group are read as two, and each slot is it
 }
 #endif
 
-#if defined(__x86_64__)
+#if defined(__x86_64__) && !defined(_WIN32)
 TEST_CASE("A zone's FLOPs are the FLOPs it ran", "[source]") {
     require_roofline();
     constexpr long kScalar = 20'000'000;
