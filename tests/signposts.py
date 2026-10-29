@@ -20,6 +20,60 @@ from pathlib import Path
 
 TABLE = '/trace-toc/run[@number="1"]/data/table[@schema="os-signpost"]'
 
+ROUNDS = 40  # how many rounds the program emits, passed to it
+WHOLE = 2  # how many of the last must arrive whole for a recording to count
+
+
+def emitted(rounds: int) -> list[tuple[str, str, str, int | None]]:
+    """Every signpost the program emits, in order: event type, category (the library's lane), the
+    name a begin carries (an end carries none), and for an end the index of its begin."""
+    out: list[tuple[str, str, str, int | None]] = []
+    for i in range(rounds):
+        start = len(out)
+        out += [
+            ("Begin", "sptest_a", "signpost outer", None),
+            ("Begin", "sptest_b", "signpost inner", None),
+            ("End", "sptest_b", "", start + 1),
+            ("Begin", "zones", f"signpost dynamic {i}", None),
+            ("End", "zones", "", start + 3),
+            ("End", "sptest_a", "", start),
+        ]
+    return out
+
+
+def check(found: list[dict]) -> tuple[list[str], int, int]:
+    """What is wrong with the program's signposts as recorded, how many intervals they hold, and how
+    many rounds arrived whole.
+
+    A recording that starts late loses what the program emitted first and nothing after, so what it
+    holds must be exactly the last signposts emitted, in order, every end paired with its begin by
+    identifier unless that begin is among those lost. Anything else - a name or lane wrong, an end
+    that is not its begin's, one missing from the middle - is the source's fault, not xctrace's."""
+    want = emitted(ROUNDS)
+    rows = sorted(found, key=lambda r: r["ns"])  # stable: a tie keeps the export's order
+    got = [(r["event-type"], r["category"], r.get("message", "") if r["event-type"] == "Begin" else "")
+           for r in rows]  # fmt: skip
+    lost = len(want) - len(got)
+    if lost < 0 or got != [w[:3] for w in want[lost:]]:
+        # Matched from the end, the last signpost that differs is where one was dropped or changed.
+        tail = [w[:3] for w in want]
+        back = next(k for k in range(1, len(got) + 1) if k > len(tail) or got[-k] != tail[-k])
+        expected = tail[-back] if back <= len(tail) else "nothing"
+        where = f"signpost {len(got) - back} is {got[-back]}, wanted {expected}"
+        return [f"{len(got)} signposts are not the last {len(got)} emitted: {where}"], 0, 0
+    problems = []
+    intervals = 0
+    for j, row in enumerate(rows):
+        begin = want[lost + j][3]
+        if begin is None or begin < lost:
+            continue
+        intervals += 1
+        opened = rows[begin - lost]["identifier"]
+        if opened != row["identifier"]:
+            problems.append(f"signpost {j} ends {row['identifier']}, but its begin was {opened}")
+    whole = ROUNDS - (lost + 5) // 6
+    return problems, intervals, whole
+
 
 def signposts(trace: Path) -> list[dict]:
     """The os-signpost table, one dict per row by column mnemonic, with "ns", the row's time in
@@ -116,17 +170,22 @@ def main(program: str) -> int:
         trace = Path(tmp) / "signposts.trace"
         # Two ways a recording fails that are xctrace's, not the program's, and CI's virtual Macs
         # show both now and then: it never ends, or it ends cleanly having lost the program's
-        # signposts, every one or some. They are lost when the logging stream attaches after the
-        # program has emitted them, or to another process's busy stream of signposts. Either gets
-        # one more try. A recording that captured the program but got it wrong is checked below
-        # and fails at once, and so does a second empty one; both say what else was emitting.
+        # signposts, every one or the first ones. They are lost when the logging stream attaches
+        # after the program has emitted them, or to another process's busy stream of signposts.
+        # Losing the first rounds is fine while the last WHOLE arrive; a hang, an empty recording
+        # or one too short gets one more try. A recording that is not the end of what the program
+        # emitted is wrong, and fails at once, and so does a second failed try; both say what else
+        # was emitting.
         found: list[dict] = []
+        problems: list[str] = []
+        intervals = whole = 0
         for attempt in (1, 2):
             if trace.exists():
                 shutil.rmtree(trace)
             run = subprocess.Popen(
                 ["xcrun", "xctrace", "record", "--template", "Logging", "--output", str(trace),
-                 "--env", "WAGGLE_SOURCES=signposts", "--env", "WAGGLE_REPORT=false", "--launch", "--", program],
+                 "--env", "WAGGLE_SOURCES=signposts", "--env", "WAGGLE_REPORT=false", "--launch", "--", program,
+                 str(ROUNDS)],
                 env=dict(os.environ), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             )  # fmt: skip
             try:
@@ -145,53 +204,22 @@ def main(program: str) -> int:
                 print(stdout, stderr, sep="\n")
                 return 1
             found = [r for r in signposts(trace) if r.get("subsystem") == "waggle"]
-            if found:
+            if not found:
+                print(f"signposts: the recording holds no waggle signposts (attempt {attempt})")
+                continue
+            problems, intervals, whole = check(found)
+            if problems or whole >= WHOLE:
                 break
-            print(f"signposts: the recording holds no waggle signposts (attempt {attempt})")
-        if not found:
-            print("signposts: no recording captured the program's signposts")
+            print(f"signposts: the recording began late; only the last {whole} of {ROUNDS} rounds are whole "
+                  f"(attempt {attempt})")  # fmt: skip
+        if not problems and whole < WHOLE:
+            print(f"signposts: no recording captured the last {WHOLE} rounds of the program's signposts")
             describe_signpost_traffic(Path(tmp))
             return 1
 
-    # An id names one interval among those open at once: the next zone at the same depth on the
-    # same thread may take it again once the last has ended. So begins and ends pair in time order.
-    problems = []
-    open_by_id: dict[str, dict] = {}
-    intervals = []
-    for r in sorted(found, key=lambda r: r["ns"]):
-        if r["event-type"] == "Begin":
-            if r["identifier"] in open_by_id:
-                problems.append(f"interval {r['identifier']} began again while open")
-            open_by_id[r["identifier"]] = r
-        elif r["event-type"] == "End":
-            b = open_by_id.pop(r["identifier"], None)
-            if b is None:
-                problems.append(f"interval {r['identifier']} ended without a begin")
-            else:
-                intervals.append((b["message"], b["category"], b["ns"], r["ns"]))
-    if open_by_id:
-        problems.append(f"{len(open_by_id)} interval(s) never ended")
-
-    want = {
-        ("signpost outer", "sptest_a"): 2,
-        ("signpost inner", "sptest_b"): 2,
-        ("signpost dynamic 0", "zones"): 1,
-        ("signpost dynamic 1", "zones"): 1,
-    }
-    got: dict[tuple[str, str], int] = {}
-    for message, category, _, _ in intervals:
-        got[(message, category)] = got.get((message, category), 0) + 1
-    if got != want:
-        problems.append(f"intervals by name and library: {got}, wanted {want}")
-    # Each inner zone lies within an outer one.
-    outers = [(s, e) for m, _, s, e in intervals if m == "signpost outer"]
-    for m, _, s, e in intervals:
-        if m == "signpost inner" and not any(start <= s and e <= end for start, end in outers):
-            problems.append(f"an inner zone ({s}..{e} ns) lies within no outer one: {outers}")
-
     for p in problems:
         print("signposts:", p)
-    print(f"signposts: {len(intervals)} intervals {'with problems' if problems else 'as expected'}")
+    print(f"signposts: {intervals} intervals {'with problems' if problems else 'as expected'}")
     if problems:
         with tempfile.TemporaryDirectory() as tmp:
             describe_signpost_traffic(Path(tmp))
