@@ -14,7 +14,7 @@ dependencies:
   # a real BLAS, for the roofline source's test of a matrix multiply near the machine's peak
   - openblas
   # apiary generates waggle._core from python/src/Core.hpp
-  - apiary >=1.2,<2
+  - apiary >=1.3.1,<2
   - pytest
   - pip
   - textual
