@@ -13,7 +13,7 @@ own option), opens saved session files, and replays recorded streams. Only the v
 Textual, imported on use. Libraries add panels and actions through :mod:`waggle.plugin`.
 """
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"
 
 # Names waggle.instrument defines; every other public name comes from the compiled module.
 _INSTRUMENT = frozenset(

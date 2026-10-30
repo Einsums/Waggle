@@ -10,7 +10,7 @@ cmake_minimum_required(VERSION 3.24)
 
 project(
   Waggle
-  VERSION 0.1.0
+  VERSION 1.0.0
   DESCRIPTION "A low-overhead tracing profiler that several libraries in one process share"
   LANGUAGES CXX
 )
