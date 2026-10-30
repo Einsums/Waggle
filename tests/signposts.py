@@ -22,6 +22,7 @@ TABLE = '/trace-toc/run[@number="1"]/data/table[@schema="os-signpost"]'
 
 ROUNDS = 40  # how many rounds the program emits, passed to it
 WHOLE = 2  # how many of the last must arrive whole for a recording to count
+SKIPPED = 77  # the exit status CTest reads as skipped (SKIP_RETURN_CODE in tests/CMakeLists.txt)
 
 
 def emitted(rounds: int) -> list[tuple[str, str, str, int | None]]:
@@ -176,9 +177,14 @@ def main(program: str) -> int:
         # or one too short gets one more try. A recording that is not the end of what the program
         # emitted is wrong, and fails at once, and so does a second failed try; both say what else
         # was emitting.
+        #
+        # Only when every try hangs is the test skipped: no recording ended, so nothing about
+        # Waggle was checked. An empty recording still fails, since a source that emits nothing
+        # looks exactly like that.
         found: list[dict] = []
         problems: list[str] = []
         intervals = whole = 0
+        hangs = 0
         for attempt in (1, 2):
             if trace.exists():
                 shutil.rmtree(trace)
@@ -199,6 +205,7 @@ def main(program: str) -> int:
                 run.kill()
                 stdout, stderr = run.communicate()
                 print(stdout, stderr, sep="\n")
+                hangs += 1
                 continue
             if run.returncode != 0 or not trace.exists():
                 print(stdout, stderr, sep="\n")
@@ -212,6 +219,10 @@ def main(program: str) -> int:
                 break
             print(f"signposts: the recording began late; only the last {whole} of {ROUNDS} rounds are whole "
                   f"(attempt {attempt})")  # fmt: skip
+        if hangs == 2:
+            print("signposts: skipped: xctrace never finished a recording, so this machine's Instruments "
+                  "could not be used; nothing about Waggle was checked")  # fmt: skip
+            return SKIPPED
         if not problems and whole < WHOLE:
             print(f"signposts: no recording captured the last {WHOLE} rounds of the program's signposts")
             describe_signpost_traffic(Path(tmp))

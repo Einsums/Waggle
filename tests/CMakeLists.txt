@@ -181,9 +181,15 @@ if(APPLE)
     add_test(NAME ${WAGGLE_TEST_PREFIX}Signposts COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/signposts.py
                                                          $<TARGET_FILE:waggle_SignpostsProgram>
     )
-    # The script's own verdict, so a script that checks nothing (or is empty) cannot pass.
+    # The script's own verdict, so a script that checks nothing (or is empty) cannot pass. Exit 77 is
+    # its "skipped", for when xctrace never finishes a recording; SKIP_RETURN_CODE wins over the
+    # regular expression.
     set_tests_properties(
-      ${WAGGLE_TEST_PREFIX}Signposts PROPERTIES TIMEOUT 300 RUN_SERIAL TRUE PASS_REGULAR_EXPRESSION "signposts: [0-9]+ intervals as expected"
+      ${WAGGLE_TEST_PREFIX}Signposts
+      PROPERTIES TIMEOUT 300
+                 RUN_SERIAL TRUE
+                 PASS_REGULAR_EXPRESSION "signposts: [0-9]+ intervals as expected"
+                 SKIP_RETURN_CODE 77
     )
   else()
     message(STATUS "Waggle: the signposts test needs xctrace (Xcode) and Python; not run")
