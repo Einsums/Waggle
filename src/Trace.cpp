@@ -14,6 +14,10 @@
 #include <chrono>
 #include <cstring>
 
+#ifdef __linux__
+#    include <time.h>
+#endif
+
 #include "Diagnostics.hpp"
 #include "Process.hpp"
 #include "Sites.hpp"
@@ -80,8 +84,10 @@ constexpr uint32_t kDoubleValue = 5;
 constexpr uint32_t kStringValue = 6;
 constexpr uint32_t kName        = 10;
 } // namespace arg
-// CLOCK_MONOTONIC's id among Perfetto's builtin clocks, and the first id a sequence may define.
+// CLOCK_MONOTONIC's and CLOCK_BOOTTIME's ids among Perfetto's builtin clocks, and the first id a
+// sequence may define.
 constexpr uint64_t kMonotonicClock = 3;
+constexpr uint64_t kBootClock      = 6;
 constexpr uint64_t kSequenceClock  = 64;
 } // namespace field
 
@@ -157,6 +163,19 @@ auto now_ns() -> uint64_t {
         std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
+/// CLOCK_BOOTTIME at the moment CLOCK_MONOTONIC read @p monotonic_ns. Only Linux keeps a clock that
+/// counts suspended time apart from the monotonic one; everywhere else Perfetto's own BOOTTIME is
+/// the monotonic clock, so it is that reading.
+auto boot_ns([[maybe_unused]] uint64_t monotonic_ns) -> uint64_t {
+#ifdef __linux__
+    timespec ts{};
+    if (clock_gettime(CLOCK_BOOTTIME, &ts) == 0) {
+        return static_cast<uint64_t>(ts.tv_sec) * 1'000'000'000U + static_cast<uint64_t>(ts.tv_nsec);
+    }
+#endif
+    return monotonic_ns;
+}
+
 // Track kinds, in a uuid's bits 28-31 below the pid, so traces of several processes merge.
 enum class Kind : uint64_t { Process = 1, Thread = 2, Energy = 3, Device = 4, Memory = 5 };
 
@@ -202,6 +221,10 @@ auto TraceWriter::open(std::string const &path, DomainTable const &domains) -> s
     _last_flush_ns    = ns;
     Proto p(_buffer);
     // The process sequence: absolute CLOCK_MONOTONIC times, which every other clock maps to.
+    // BOOTTIME is in the snapshot although nothing here is timed by it: it is Perfetto's default
+    // clock, which trace_processor 59 relates every file's times to, and with nothing tying it to
+    // MONOTONIC it reports clock_sync_unrelatable_clock_domains. A real reading also lines the
+    // trace up with a system trace, which is timed in BOOTTIME.
     size_t const pkt = p.open(field::kTracePacket);
     p.u(field::packet::kSequenceId, kProcessSequence);
     p.u(field::packet::kSequenceFlags, field::packet::kIncrementalClear);
@@ -213,6 +236,10 @@ auto TraceWriter::open(std::string const &path, DomainTable const &domains) -> s
     p.u(1, field::kMonotonicClock);
     p.u(2, ns);
     p.close(clock);
+    size_t const boot = p.open(1);
+    p.u(1, field::kBootClock);
+    p.u(2, boot_ns(ns));
+    p.close(boot);
     p.u(2, field::kMonotonicClock); // primary_trace_clock
     p.close(snapshot);
     p.close(pkt);
