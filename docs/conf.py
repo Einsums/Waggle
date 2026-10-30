@@ -20,7 +20,7 @@ sys.path.insert(0, str(HERE / "_ext"))
 project = "Waggle"
 author = "The Einsums Developers"
 copyright = "The Einsums Developers"  # noqa: A001 - Sphinx's name
-release = os.environ.get("WAGGLE_VERSION", "1.0.0")
+release = os.environ.get("WAGGLE_VERSION", "1.0.1")
 version = release
 
 extensions = [
