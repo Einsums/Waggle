@@ -96,9 +96,11 @@ set(WAGGLE_PYTHON_STAGING_DIR
     ""
     CACHE PATH "Directory to copy the waggle Python package into at configure time; empty for none"
 )
+# A STRING, not a PATH: CMake makes a relative PATH given on the command line absolute against the
+# working directory, which would install outside the prefix.
 set(WAGGLE_PYTHON_INSTALL_DIR
     ""
-    CACHE PATH "Install destination of the waggle Python package, relative to the prefix; empty for none"
+    CACHE STRING "Install destination of the waggle Python package, relative to the prefix; empty for none"
 )
 set(_waggle_python_dir "${WAGGLE_PYTHON_STAGING_DIR}")
 if(WAGGLE_BUILD_PYTHON AND NOT _waggle_python_dir)
