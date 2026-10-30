@@ -75,8 +75,10 @@ TEST_CASE("TickClock converts to steady_clock time", "[profiler][clock]") {
         double const steady_ns = std::chrono::duration<double, std::nano>(t1 - t0).count();
         double const ticks_ns  = std::chrono::duration<double, std::nano>(clock.to_time_point(c1) - clock.to_time_point(c0)).count();
         // The tick interval sits inside the steady_clock one; on x86 the rate is measured, so
-        // allow it half a percent.
-        CHECK(ticks_ns <= steady_ns + 1000.0);
+        // allow it half a percent either way. A measured rate errs in both directions: a Windows
+        // runner's came out 38 ppm fast, which a fixed 1 us bound failed once its 20 ms sleep ran
+        // to 27.5 ms.
+        CHECK(ticks_ns <= 1.005 * steady_ns + 1000.0);
         CHECK(ticks_ns >= 0.995 * steady_ns - 10000.0);
     }
 }
