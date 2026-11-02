@@ -15,6 +15,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <fstream>
 
@@ -337,6 +338,18 @@ auto perf_event_open(perf_event_attr *attr, pid_t pid, int cpu, int group_fd, un
     return static_cast<int>(syscall(__NR_perf_event_open, attr, pid, cpu, group_fd, flags));
 }
 
+/// Sets perf_event_attr::sample_max_stack, which Linux 4.8 added. Older kernel headers, such as the
+/// 3.10 ones in conda-forge's glibc 2.17 sysroot, call those bytes __reserved_3; the kernel reads the
+/// field at the same offset, right after aux_watermark, whatever headers the build had.
+template <typename Attr>
+void set_sample_max_stack(Attr &attr, uint16_t frames) {
+    if constexpr (requires { attr.sample_max_stack; }) {
+        attr.sample_max_stack = frames;
+    } else {
+        std::memcpy(reinterpret_cast<char *>(&attr) + offsetof(Attr, aux_watermark) + sizeof(attr.aux_watermark), &frames, sizeof(frames));
+    }
+}
+
 /// The process's threads now.
 auto task_ids() -> std::vector<uint32_t> {
     std::vector<uint32_t> ids;
@@ -442,12 +455,12 @@ auto Sampler::open_thread(uint32_t tid) -> bool {
     attr.freq                     = 1;
     attr.sample_freq              = _rate;
     attr.sample_type              = PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_TIME | (_callchain ? PERF_SAMPLE_CALLCHAIN : 0);
-    attr.sample_max_stack         = _callchain ? kMaxChain : 0; // user frames, from frame pointers
-    attr.exclude_kernel           = 1;                          // user space only, which kernel.perf_event_paranoid 2 allows
+    attr.exclude_kernel           = 1; // user space only, which kernel.perf_event_paranoid 2 allows
     attr.exclude_hv               = 1;
     attr.exclude_callchain_kernel = 1;
     attr.use_clockid              = 1; // the clock zones are on, so every sample finds its zone
     attr.clockid                  = CLOCK_MONOTONIC;
+    set_sample_max_stack(attr, static_cast<uint16_t>(_callchain ? kMaxChain : 0)); // user frames, from frame pointers
 
     int fd = perf_event_open(&attr, static_cast<pid_t>(tid), -1, -1, PERF_FLAG_FD_CLOEXEC);
     if (fd < 0 && _hardware && (errno == ENOENT || errno == EOPNOTSUPP || errno == ENODEV)) {
