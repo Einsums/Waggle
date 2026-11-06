@@ -16,12 +16,14 @@ concurrency:
 
 jobs:
   build:
-    name: ${{ matrix.os }}
+    name: ${{ matrix.os }} (${{ matrix.backend }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        # waggle._core under each binding library apiary can target (APIARY_BACKEND).
+        backend: [pybind11, nanobind]
     defaults:
       run:
         shell: bash -el {0}
@@ -61,7 +63,7 @@ jobs:
       - name: Configure
         # A per-configuration output directory, as a parent project like Einsums sets, must not
         # move waggle._core out of the package (its Python tests require it).
-        run: cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DWAGGLE_BUILD_TESTS=ON -DWAGGLE_BUILD_PYTHON=ON -DCMAKE_LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO=${{ github.workspace }}/build/elsewhere -DWAGGLE_REQUIRE_OMPT_TEST=ON -DWAGGLE_REQUIRE_PERFETTO_TEST=ON
+        run: cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DWAGGLE_BUILD_TESTS=ON -DWAGGLE_BUILD_PYTHON=ON -DAPIARY_BACKEND=${{ matrix.backend }} -DCMAKE_LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO=${{ github.workspace }}/build/elsewhere -DWAGGLE_REQUIRE_OMPT_TEST=ON -DWAGGLE_REQUIRE_PERFETTO_TEST=ON
 
       - name: Build
         run: cmake --build build --target all waggle_tests
@@ -70,7 +72,12 @@ jobs:
         run: ctest --test-dir build --output-on-failure -j4
 
   windows:
+    name: windows-latest (${{ matrix.backend }})
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [pybind11, nanobind]
     defaults:
       run:
         # conda-forge's compilers set up MSVC through a batch activation script.
@@ -89,7 +96,7 @@ jobs:
       - name: Configure
         # A per-configuration output directory, as a parent project like Einsums sets, must not
         # move waggle._core out of the package (its Python tests require it).
-        run: cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DWAGGLE_BUILD_TESTS=ON -DWAGGLE_BUILD_PYTHON=ON -DCMAKE_LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO=${{ github.workspace }}/build/elsewhere
+        run: cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DWAGGLE_BUILD_TESTS=ON -DWAGGLE_BUILD_PYTHON=ON -DAPIARY_BACKEND=${{ matrix.backend }} -DCMAKE_LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO=${{ github.workspace }}/build/elsewhere
 
       - name: Build
         run: cmake --build build --target all waggle_tests
