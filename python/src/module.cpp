@@ -4,13 +4,12 @@
 //----------------------------------------------------------------------------------------------
 
 // waggle._core: apiary generates the bindings for python/src/Core.hpp and the register header this
-// includes; this file only names the module.
+// includes; this file only names the module. The register header defines APIARY_EXTENSION_MODULE
+// for the binding library APIARY_BACKEND chose, so the file is the same under pybind11 and nanobind.
 
 #include <waggle/Modules.hpp>
 
-#include <pybind11/pybind11.h>
-
-PYBIND11_MODULE(_core, m) {
+APIARY_EXTENSION_MODULE(_core, m) {
     m.doc() = "The Waggle profiler for Python code, over its C interface.";
     waggle_register_all(m);
 }

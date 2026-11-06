@@ -86,7 +86,7 @@ add_library(Waggle::internal ALIAS waggle_internal)
 # ── Python ─────────────────────────────────────────────────────────────────
 # The viewer and the report tools are pure Python. waggle._core, the profiler for Python code, is a
 # compiled module apiary generates from python/src/Core.hpp; it calls only the C interface.
-option(WAGGLE_BUILD_PYTHON "Build waggle._core, the profiler for Python code (needs apiary and pybind11)" OFF)
+option(WAGGLE_BUILD_PYTHON "Build waggle._core, the profiler for Python code (needs apiary and pybind11 or nanobind)" OFF)
 option(WAGGLE_BUILD_DOCS "Add waggle_docs, the HTML documentation (needs WAGGLE_BUILD_PYTHON and Sphinx)" OFF)
 
 # A project that builds Waggle beside its own Python package stages Waggle's next to it, so both
@@ -130,14 +130,14 @@ endif()
 
 if(WAGGLE_BUILD_PYTHON)
   if(NOT COMMAND apiary_add_bindings)
-    # The codegen tool, not just the annotations, which an install may have alone; 1.3.1 is the
-    # first release with the tool as a component of its own.
-    find_package(Apiary 1.3.1...<2 CONFIG REQUIRED COMPONENTS tool)
+    # The codegen tool, not just the annotations, which an install may have alone; 1.4 is the first
+    # release that finds the binding library for its consumers.
+    find_package(Apiary 1.4...<2 CONFIG REQUIRED COMPONENTS tool)
   endif()
-  if(NOT COMMAND pybind11_add_module)
-    find_package(Python COMPONENTS Interpreter Development.Module REQUIRED)
-    find_package(pybind11 CONFIG REQUIRED)
-  endif()
+  # pybind11 or nanobind, whichever APIARY_BACKEND names, and with APIARY_STABLE_ABI one stable-ABI
+  # waggle._core for every Python from 3.12 on. A project that builds Waggle inside its own has
+  # already chosen, and this takes the same library.
+  apiary_find_backend()
   apiary_detect_toolchain(CXX_STANDARD 20)
 
   # What apiary parses Core.hpp with: Waggle's public headers and the annotation macros.

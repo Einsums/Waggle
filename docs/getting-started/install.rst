@@ -35,8 +35,11 @@ The options:
 
 ``WAGGLE_BUILD_PYTHON``
     Build ``waggle._core``, the compiled module the Python profiling API records through.
-    It needs `apiary <https://github.com/Einsums/Apiary>`_, which generates the module from a header, and pybind11.
-    On Linux apiary also needs clang's builtin headers from a clang matching its LLVM (``conda install "clang 23.*"`` for apiary 1.1).
+    It needs `apiary <https://github.com/Einsums/Apiary>`_ 1.4 or newer, which generates the module from a header, and pybind11 or nanobind.
+    apiary's conda-forge package brings the clang builtin headers it parses with.
+    The binding library is apiary's choice, ``APIARY_BACKEND``: ``pybind11`` (the default) or ``nanobind`` (3.0 or newer).
+    With nanobind, ``APIARY_STABLE_ABI=ON`` builds one stable-ABI (abi3) module that loads on every Python from 3.12 on.
+    A project that builds Waggle inside its own has made that choice already, and Waggle follows it.
 
 ``WAGGLE_BUILD_TESTS``
     Build the tests, which ``ctest`` runs; on by default when Waggle is the top-level project.
