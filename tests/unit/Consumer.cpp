@@ -376,8 +376,10 @@ TEST_CASE("The report's thread total includes nested zones", "[profiler][consume
         expected_ms        = std::chrono::duration<double, std::milli>(inclusive_time(it->second.root)).count();
         outer_exclusive_ms = std::chrono::duration<double, std::milli>(outer->total_exclusive).count();
     }
-    REQUIRE(expected_ms >= 3.0);
-    REQUIRE(outer_exclusive_ms < 1.0); // what the header used to show
+    // The header used to show only the outer zone's exclusive time, which leaves out the nested zone's
+    // sleep of at least 3 ms. A bound on the outer time alone failed on Windows, where the worker can
+    // lose a scheduler quantum (about 3 ms) between the two pushes.
+    REQUIRE(expected_ms - outer_exclusive_ms >= 2.999);
 
     std::ostringstream report;
     prof.print(false, report);
